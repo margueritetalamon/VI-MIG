@@ -1,6 +1,6 @@
 # Variational Inference with Gaussian Mixture
 
-There are two types of optimization in the '''optim.py''' file :
+There are two types of optimization in the optim.py' file :
 - Optimization on the mean of each gaussian of the mixture
 - Optimization on the mean AND variance of the each gaussian of the mixture.
 
