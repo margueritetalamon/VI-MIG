@@ -11,7 +11,9 @@ def gaussian_kernel(sample, mu, epsilon): ## CHECKED
 def V_function(x, pi_mean, pi_cov):
     ### x :  B, d
     ### out : B
-    return torch.clamp(torch.stack([-((x - pim)**2).sum(dim = 1)/(2*pi_cov[0,0]) for pim in pi_mean]).exp().sum(dim = 0), 1e-40).log()
+
+
+    return - torch.clamp(torch.stack([-((x - pim)**2).sum(dim = 1)/(2*pi_cov[0,0]) for pim in pi_mean]).exp().sum(dim = 0), 1e-40).log()
 
 
 
