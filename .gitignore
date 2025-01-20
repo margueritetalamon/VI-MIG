@@ -1,0 +1,7 @@
+*.png
+*.pt
+*.pdf
+*.gif
+*.DS_Store
+*.pyc
+*.ipynb
