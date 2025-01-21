@@ -198,7 +198,7 @@ def plot_target_and_initial_gaussians(
     pi_means,          # shape (N_target, d)
     pi_cov,            # shape (d, d)
     mu_inits,          # shape (N_mixture, d)
-    epsilon,        # scalar, e.g. sqrt(d)
+    epsilon,           # shape (N_mixture)
     bounds=(-20, 20),  # plotting region (xmin,xmax) = (ymin,ymax)
     grid_size=100,     # number of points for mesh in each dimension
 ):
@@ -236,7 +236,7 @@ def plot_target_and_initial_gaussians(
         center = mu_inits[i]
         circle = plt.Circle(
             (center[0], center[1]),
-            radius=epsilon**2,
+            radius=epsilon[i]**2,
             # color=colors[i],
             color = "black",
             fill=False,

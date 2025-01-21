@@ -41,7 +41,7 @@ def monte_carlo_kl_approximation(mu_locs, epsilon, pi_dist, B=100): ### CHECKED
 
 def  grad_V(x, pi_mean, pi_cov):
     ### numerator B, d
-    clippin = 10e-40
+    clippin = 1e-40
     numerator = torch.stack([(-((x - pim)**2).sum(dim = 1)/(2*pic[0,0])).exp()[..., None]*(x-pim)/pic[0,0] for pim, pic in zip(pi_mean, pi_cov)]).sum(dim = 0) 
     numerator = numerator + clippin
     ### denom B, 1

@@ -5,6 +5,7 @@ import torch
 
 def target_gmm(N_target, d):
     """ Define the target Gaussian mixture distribution. """
+
     # epsilon = torch.randn((N_target,))
     epsilon =  torch.ones((N_target,))
     epsilon *= math.sqrt(d)
@@ -12,14 +13,14 @@ def target_gmm(N_target, d):
     # epsilon = torch.ones((N_target,)) * math.sqrt(d)
     sig = torch.eye(d) * 5**2
 
-    # mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=sig)
+    mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=sig)
     
-    # pi_mean = mvn_dist.sample((N_target,))
+    pi_mean = mvn_dist.sample((N_target,))
 
     
     # pi_mean = -10 + 20 * torch.rand((N_target,d))
     # pi_mean = sample_uniform_hypersphere(N_target,d)*10
-    pi_mean = torch.randint(-15,15, size = (N_target,d))
+    # pi_mean = torch.randint(-15,15, size = (N_target,d))
     pi_cov = epsilon[..., None, None]**2 * torch.eye(d)[None]
     print(pi_cov.shape)
 
