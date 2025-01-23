@@ -34,6 +34,8 @@ def kl_evolution(pi_dist, M, E = None, B = 100):
     if E is None:
         E = [torch.ones(n,)*1.5 for _ in range(len(M))]
 
+    torch.manual_seed(1)
+
     y_01 = torch.randn(n, B, d) 
     KLS = []
     for m, eps in tqdm.tqdm(zip(M, E)):
@@ -59,7 +61,7 @@ def compute_grads(mu_locs, epsilon, pi_mean , pi_cov, y_01, optim_eps = True, cl
     GV = rearrange(grad_V(Y_flat,  pi_mean, pi_cov), "(n b) d -> n b d", n  = n)
     first_term = GV.mean(dim = -2)
 
-    y_mu_div_eps = ((Y_flat[:, None]- mu_locs[None])/epsilon[None,:, None]**2) # b, n ,d (b is n * b ) 
+    y_mu_div_eps = ((Y_flat[:, None]- mu_locs[None])/(epsilon[None,:, None]**2)) # b, n ,d (b is n * b ) 
     GK = gaussian_kernel_HD(Y_flat, mu_locs,epsilon)
     num = (y_mu_div_eps  * GK[..., None]).sum(dim  = -2)
     den =  GK.sum(dim = -1)
@@ -71,11 +73,11 @@ def compute_grads(mu_locs, epsilon, pi_mean , pi_cov, y_01, optim_eps = True, cl
     second_term = (num1/den[..., None]).mean(dim = 1)
 
 
-    grad_locs = (first_term - second_term) # n, d 
+    grad_locs = (first_term - second_term)/n # n, d 
 
     ################### GRAD ej #####################################
     if optim_eps:
-        Yj_muj_epsj = ((Y - mixture_means)/epsilon[..., None,None]**2)
+        Yj_muj_epsj = ((Y - mixture_means)/(epsilon[..., None,None]**2))
         num2 = (Yj_muj_epsj * num).sum(dim = -1) #PRODUIT SCALAIRE
 
         first_term = (num2/den).mean(dim = -1)
@@ -105,22 +107,26 @@ def grad_V2(Y_flat, pi_mean, pi_cov, pi_dist, clippin = 1e-40):
 
 
 import torch
-def sample_mixture(means, epsilon , M):
+def sample_mixture(noise, mean, eps , component_indices):
 
-    N, d = means.shape
-    component_indices = torch.randint(0, N, (M,))
-    covs = (epsilon[..., None, None] ** 2) * torch.eye(d).unsqueeze(0)  
-    mvn = torch.distributions.MultivariateNormal(loc=means, covariance_matrix=covs)
+    N, d = mean.shape
+    # print("MEAN",mean.shape)
+    mean = mean[component_indices]
+    # print(mean.shape)
 
-    all_samples = mvn.sample((M,))  
+    # print("EPS",eps.shape)
+    eps = eps[component_indices].unsqueeze(1)
+    # print(eps.shape)
+    # print(noise.shape)
 
-    samples = all_samples[torch.arange(M), component_indices]
+    samples = mean + eps * noise
 
     return samples
 
 
-def compute_kl(m, e, pi_dist, M):
-    y = sample_mixture(m, e, M = 100)
+def compute_kl(m, e, pi_dist, noise, component_indices):
+
+    y = sample_mixture(noise, m, e, component_indices)
     n,d = m.shape
     N_target = pi_dist.batch_shape[0]
     clippin = 1e-40
@@ -129,3 +135,19 @@ def compute_kl(m, e, pi_dist, M):
                                                    ).log_prob(y.unsqueeze(1)).exp().sum(dim = -1) + clippin).log() - torch.log(torch.tensor([n]))
     log_q = (pi_dist.log_prob(y.unsqueeze(1)).exp().sum(dim = -1) + clippin).log() - torch.log(torch.tensor([N_target]))
     return (log_p - log_q).mean()
+
+
+
+def compte_all_kls(means, epsilons, pi_dist, M =100):
+
+
+    n, d = means[0].shape
+    noise = torch.randn(M,d)
+    component_indices = torch.randint(0, n, (M,))
+
+
+    KLS =  []
+    for m,e in zip(means,epsilons): 
+        KLS.append(compute_kl(m,e, pi_dist, noise, component_indices))
+
+    return KLS

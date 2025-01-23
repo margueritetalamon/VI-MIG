@@ -39,6 +39,7 @@ def monte_carlo_kl_approximation(mu_locs, epsilon, pi_dist, B=100): ### CHECKED
     return KL
 
 
+
 def  grad_V(x, pi_mean, pi_cov):
     ### numerator B, d
     clippin = 1e-40
@@ -51,6 +52,24 @@ def  grad_V(x, pi_mean, pi_cov):
 
     return numerator/denominator # B , d
 
+def  grad_V_diag(x, pi_mean, pi_cov):
+    ### numerator B, d
+    clippin = 1e-40
+
+    L = torch.linalg.cholesky(pi_cov)  # Shape: (n, d, d)
+    L_inv = torch.linalg.inv(L)  # Shape: (n, d, d)
+
+    pi_cov_inv = L_inv.transpose(-1, -2) @ L_inv  # Shape: (n, d, d)
+
+
+    numerator = torch.stack([(-((x - pim)**2).sum(dim = 1)/2).exp()[..., None]*(x-pim)/pic[0,0] for pim, pic in zip(pi_mean, pi_cov)]).sum(dim = 0) 
+    numerator = numerator + clippin
+    ### denom B, 1
+    denominator = torch.stack([(-((x - pim)**2).sum(dim = 1)/(2*pic[0,0])).exp() for pim, pic in zip(pi_mean, pi_cov)]).sum(dim = 0)[..., None]
+    denominator = denominator + clippin
+
+
+    return numerator/denominator # B , d
 
 
 
