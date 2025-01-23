@@ -6,7 +6,8 @@ import tqdm
 from datetime import datetime
 from src.optim_hd import optim_mu_epsi_HD, optim_mu_only_HD, optim_mu_epsi_HD_ML
 from src.utils_hd import  kl_evolution
-from src.target import target_gmm, target_gmm_4modes
+from src.target import target_gmm, target_gmm_4modes, sanity_target_2, sanity_init_2
+
 
 from src.saving import save_results
 
@@ -26,11 +27,11 @@ def run_xp(xp, pi_mean, pi_cov, mu_init, epsilon_init, folder_name, hyperparam =
                                                          learning_rate_mu = hyperparam["lr_mu"],
                                                          learning_rate_eps = hyperparam["lr_eps"], 
                                                          num_iterations = hyperparam["n_iter"], 
-                                                         B = hyperparam["B"])
+                                                         B = hyperparam["B_gradients"])
         
         pi_dist = torch.distributions.MultivariateNormal(loc=pi_mean, covariance_matrix=pi_cov)
-        kls = kl_evolution(pi_dist, M, E, hyperparam["B"])
-        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_lre{hyperparam['lr_eps']}_it{hyperparam['n_iter']}_B{hyperparam['B']}")
+        kls = kl_evolution(pi_dist, M, E, hyperparam["B_kls"])
+        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_lre{hyperparam['lr_eps']}_it{hyperparam['n_iter']}_B{hyperparam['B_gradients']}")
         save_results(subfolder_name, file_prefix, mu_optim, M, kls, epsilon_optim, E)
 
 
@@ -42,11 +43,11 @@ def run_xp(xp, pi_mean, pi_cov, mu_init, epsilon_init, folder_name, hyperparam =
                                     learning_rate_mu = hyperparam["lr_mu"],
                                     learning_rate_eps = hyperparam["lr_eps"], 
                                     num_iterations = hyperparam["n_iter"], 
-                                    B = hyperparam["B"])
+                                    B = hyperparam["B_gradients"])
         
         pi_dist = torch.distributions.MultivariateNormal(loc=pi_mean, covariance_matrix=pi_cov)
-        kls = kl_evolution(pi_dist, M, B =  hyperparam["B"])
-        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_it{hyperparam['n_iter']}_B{hyperparam['B']}")
+        kls = kl_evolution(pi_dist, M, B =  hyperparam["B_kls"])
+        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_it{hyperparam['n_iter']}_B{hyperparam['B_gradients']}")
         save_results(subfolder_name, file_prefix, mu_optim, M, kls)
 
     
@@ -58,11 +59,11 @@ def run_xp(xp, pi_mean, pi_cov, mu_init, epsilon_init, folder_name, hyperparam =
                                                             learning_rate_mu = hyperparam["lr_mu"],
                                                             learning_rate_eps = hyperparam["lr_eps"], 
                                                             num_iterations = hyperparam["n_iter"], 
-                                                            B = hyperparam["B"])
+                                                            B = hyperparam["B_gradients"])
         
         pi_dist = torch.distributions.MultivariateNormal(loc=pi_mean, covariance_matrix=pi_cov)
-        kls = kl_evolution(pi_dist, M, E, B =  hyperparam["B"])
-        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_lre{hyperparam['lr_eps']}_it{hyperparam['n_iter']}_B{hyperparam['B']}")
+        kls = kl_evolution(pi_dist, M, E, B =  hyperparam["B_kls"])
+        file_prefix = os.path.join(subfolder_name ,f"d{d}_N{N_mixture}_lrmu{hyperparam['lr_mu']}_lre{hyperparam['lr_eps']}_it{hyperparam['n_iter']}_B{hyperparam['B_gradients']}")
         save_results(subfolder_name, file_prefix, mu_optim, M, kls, epsilon_optim, E)
 
 
@@ -73,8 +74,9 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Gaussian mixture optimization experiments.")
     parser.add_argument("--d", type=int, default=10, help="Dimensionality of the data (d).")
     parser.add_argument("--lr_mu", type=float, default=0.1, help="Learning rate for mu")
-    parser.add_argument("--lr_eps", type=float, default=0.1, help="Learning rate for epsilon")
-    parser.add_argument("--B", type=int, default=100, help="Batch size for Monte Carlo estimation.")
+    parser.add_argument("--lr_eps", type=float, default=0.01, help="Learning rate for epsilon")
+    parser.add_argument("--B_gradients", type=int, default=100, help="Batch size for Monte Carlo estimation.")
+    parser.add_argument("--B_kls", type=int, default=100, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--n_iter", type=int, default=1000, help="Number of iterations")
     parser.add_argument("--nxp", type=int, default=5, help="Number of time to do the same xp")
     parser.add_argument("--n_values", nargs="+", type=int, default=[1, 10, 50, 100], 
@@ -91,9 +93,10 @@ def main(args):
     nb_xps = args.nxp
 
     hyperparam = {"lr_mu" : args.lr_mu,
-                  "lr_eps" : args.lr_mu,
+                  "lr_eps" : args.lr_eps,
                   "n_iter" : args.n_iter,
-                  "B" : args.B,
+                  "B_kls" : args.B_kls,
+                  "B_gradients" : args.B_gradients
 
     }
 
@@ -103,8 +106,11 @@ def main(args):
 
     # N_target = 100
     N_target = 20
+    s = 5 * math.sqrt(d)
     # pi_mean, pi_cov = target_gmm_4modes(N_target, d)
-    pi_mean, pi_cov = target_gmm(N_target, d)
+    pi_mean, pi_cov = target_gmm(N_target, d, s)
+
+
 
     init_folder_name = os.path.join(folder_name, "init")
     os.makedirs(init_folder_name, exist_ok=True)
@@ -112,20 +118,23 @@ def main(args):
     torch.save(pi_mean, f"{folder_name}/init/pi_mean.pt")
     torch.save(pi_cov, f"{folder_name}/init/pi_cov.pt")
     XPS = ["mirror", "optim_wo_eps", "ibw"]
+    XPS = ["mirror"]
 
     for N_mixture in n_values:
+        mu_init = torch.empty(size = (0,d) )
+
         for nxp in range(nb_xps):
 
-            mu_init = torch.empty(size = (0,d) )
 
-            mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=torch.eye(d) * 5**2)
-            mu_init = torch.cat([mu_init, mvn_dist.sample((N_mixture - mu_init.shape[0],))])
+            s = 30
+            mu_init = torch.cat([mu_init, torch.empty(N_mixture - mu_init.shape[0] , d).uniform_(-s, s)])
             # epsilon_init = torch.ones(N_mixture)*1.5 * math.sqrt(d)
             epsilon_init = torch.ones(N_mixture)
 
             torch.save(mu_init, f"{folder_name}/init/mu_init_N{N_mixture}_xp{nxp}.pt")
             torch.save(epsilon_init, f"{folder_name}/init/epsilon_init_N{N_mixture}_xp{nxp}.pt")
-
+            # hyperparam["lr_eps"] = 0.1/N_mixture
+            # hyperparam["lr_mu"] = 1/N_mixture
 
             for xp in XPS: 
                 hyperparam["xp"] = nxp
