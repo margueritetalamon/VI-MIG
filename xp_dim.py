@@ -74,7 +74,7 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Gaussian mixture optimization experiments.")
     parser.add_argument("--d", type=int, default=10, help="Dimensionality of the data (d).")
     parser.add_argument("--lr_mu", type=float, default=0.1, help="Learning rate for mu")
-    parser.add_argument("--lr_eps", type=float, default=0.01, help="Learning rate for epsilon")
+    parser.add_argument("--lr_eps", type=float, default=0.1, help="Learning rate for epsilon")
     parser.add_argument("--B_gradients", type=int, default=100, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--B_kls", type=int, default=100, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--n_iter", type=int, default=1000, help="Number of iterations")
@@ -126,7 +126,7 @@ def main(args):
         for nxp in range(nb_xps):
 
 
-            s = 30
+            s = 20
             mu_init = torch.cat([mu_init, torch.empty(N_mixture - mu_init.shape[0] , d).uniform_(-s, s)])
             # epsilon_init = torch.ones(N_mixture)*1.5 * math.sqrt(d)
             epsilon_init = torch.ones(N_mixture)
