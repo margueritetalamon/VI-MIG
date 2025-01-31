@@ -22,6 +22,7 @@ This repository provides code for variational inference using mixtures of isotro
 
 ```bash
 python xp_dim.py --d 10 --lr_mu 0.1 --lr_eps 0.01 --n_iter 1000 --nxp 5 --n_values 1 10 50 100 --exp_name "experiment_1"
+```
 
 
 | Argument | Type | Default | Description |
