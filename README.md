@@ -29,7 +29,7 @@ python xp_dim.py --d 10 --lr_mu 0.1 --lr_eps 0.01 --n_iter 1000 --nxp 5 --n_valu
 |----------|------|---------|-------------|
 | `--d` | `int` | `10` | Dimensionality of the data (d). |
 | `--lr_mu` | `float` | `0.1` | Learning rate for the optimization of `mu`. |
-| `--lr_eps` | `float` | `0.01` | Learning rate for the optimization of `epsilon`. |
+| `--lr_eps` | `float` | `0.1` | Learning rate for the optimization of `epsilon`. |
 | `--B_gradients` | `int` | `100` | Batch size for Monte Carlo estimation used in optimization. |
 | `--B_kls` | `int` | `100` | Batch size for Monte Carlo estimation used in KL computation. |
 | `--n_iter` | `int` | `1000` | Number of iterations for the optimization process. |
