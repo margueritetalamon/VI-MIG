@@ -5,7 +5,7 @@ import torch
 
 def target_gmm(N_target, d, s):
     """ Define the target Gaussian mixture distribution. """
-
+    # torch.manual_seed(4)
     # epsilon = torch.randn((N_target,))
     epsilon =  torch.ones((N_target,))
     epsilon *= math.sqrt(d)
@@ -15,6 +15,8 @@ def target_gmm(N_target, d, s):
     # sig = torch.eye(d) * (math.sqrt(d)*5)**2
 
     # mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=sig)
+    # pi_mean = mvn_dist.sample((N_target,))
+
     pi_mean = torch.empty(N_target, d).uniform_(-s, s)
     # pi_mean = mvn_dist.sample((N_target,))
 
@@ -36,9 +38,9 @@ def target_gmm(N_target, d, s):
 def target_gmm_paperLin(N_target, d):
     """ Define the target Gaussian mixture distribution. """
 
-    s = 20
+    s = 4.3 * math.sqrt(d)
 
-    epsilon =  torch.ones((N_target,))  
+    epsilon =  torch.ones((N_target,)) * math.sqrt(d)
     pi_mean = torch.empty(N_target, d).uniform_(-s, s)
     pi_cov = epsilon[..., None, None]**2 * torch.eye(d)[None]
     
@@ -73,7 +75,7 @@ def target_gmm_4modes(N_target, d):
     epsilon =  torch.ones((N_target,))
     print(epsilon)
     # epsilon = torch.ones((N_target,)) * math.sqrt(d)
-    pt = 2
+    pt = 2.5
     # pi_mean = -10 + 20 * torch.rand((N_target,d))
     pi_mean = torch.tensor([[pt,pt], [-pt,pt], [-pt,-pt], [pt,-pt]])
     print(pi_mean.shape)
@@ -116,7 +118,7 @@ def sanity_target_2():
 
 def sanity_init_2():
 
-    mu_locs = torch.tensor([[-10,3], [5,3]])
+    mu_locs = torch.tensor([[-10,0], [5,3]])
     epsilon = torch.ones((2,))
     
     return mu_locs, epsilon

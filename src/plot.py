@@ -305,7 +305,7 @@ def plot_marginals(mu_final, epsilon_final, pi_mean, pi_cov, filename, bounds=(-
 
     # Dimension of the data
     N, d = mu_final.shape
-    d = d - 1
+    
     # Grid for plotting
     x_grid = np.linspace(bounds[0], bounds[1], grid_size)
 
