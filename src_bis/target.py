@@ -52,7 +52,7 @@ class Target:
                     Z = rearrange(Z, "(h w) -> h w", h  = grid_size)
                     
 
-                ax.contour(X, Y, Z, levels=10, cmap="viridis")
+                ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
 
         elif self.dim == 1:

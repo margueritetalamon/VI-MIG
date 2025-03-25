@@ -196,7 +196,7 @@ class GMM:
                 X, Y = np.meshgrid(x, y)
                 pos = np.dstack((X, Y))[:, :, None, :]
                 Z = self.prob(pos)
-                ax.contour(X, Y, Z, levels=10, cmap="viridis")
+                ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
 
         elif self.dim == 1:

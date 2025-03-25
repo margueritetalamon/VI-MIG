@@ -29,8 +29,8 @@ class Funnel:
     
     def gradient_log_density(self, x):
         ### grad first variable 
-        grad1 = - x[:,0]/self.sigma - 0.25 + ((x[:, 1]**2)/(2* np.exp(x[:, 0])))
-        grad2 =  - x[:, 1]/np.exp(x[:, 0])
+        grad1 = - x[:,0]/self.sigma - 0.25 + ((x[:, 1]**2)/(4 * np.exp(x[:, 0]/2)))
+        grad2 =  - x[:, 1]/np.exp(x[:, 0]/2)
 
         return np.stack((grad1, grad2)).T
     
