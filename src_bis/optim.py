@@ -1,16 +1,26 @@
-from src_bis.gmm import GMM, IGMM
+from src_bis.gmm import GMM, IGMM, FGMM
 from src_bis.logreg import LogReg
+
 import numpy as np
 import tqdm
 from matplotlib import pyplot as plt
 import math 
+from scipy.stats import norm 
 
-class VI_IGMM:
-    def __init__(self, target , n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1,  **kwargs):
+
+class VI_GMM:
+    def __init__(self, target , mode = "iso", n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1,  **kwargs):
         
         self.target = target
         self.target_family = self.target.name
-        self.vgmm = IGMM(**kwargs)
+        self.mode = mode
+
+
+        if mode == "full":
+            self.vgmm = FGMM(**kwargs)
+
+        elif  mode == "iso":
+            self.vgmm = IGMM(**kwargs)
         self.dim = self.vgmm.dim
         
 
@@ -35,7 +45,7 @@ class VI_IGMM:
 
         return new_learning_rate
     
-    def optimize(self, ibw = True, md = False, means_only = False, full = False, plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False):
+    def optimize(self, bw = True, md = False, means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False):
 
 
         initial_lr =  self.learning_rate
@@ -52,7 +62,8 @@ class VI_IGMM:
 
         for _ in tqdm.tqdm(range(self.n_iterations)):
 
-            grad_means, grad_covs = self.vgmm.compute_grads_iso(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
+            
+            grad_means, grad_covs = self.vgmm.compute_grads(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
 
             
             if save_grads :
@@ -65,18 +76,22 @@ class VI_IGMM:
                 print(learning_rate)
 
             new_means = self.vgmm.means - learning_rate * grad_means
-            
-            if ibw : 
-                new_epsilons = (1 - (2/self.dim) * learning_rate * grad_covs)**2 * self.vgmm.epsilons 
 
-            elif md :
+            
+            if bw: 
+                if self.mode == "iso":
+                    new_epsilons = (1 - (2/self.dim) * learning_rate * grad_covs)**2 * self.vgmm.epsilons 
+                
+
+                elif self.mode == "full":
+                    M = np.eye(self.dim) - learning_rate* grad_covs
+                    new_epsilons = M * self.vgmm.covariances * M 
+
+            elif md:
                 new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
-
+                    
             elif means_only:
-                new_epsilons = self.vgmm.epsilons
-            
-            elif full:
-                raise ValueError("Optim not available yet.")
+                new_epsilons = None
 
             else:
                 raise ValueError("No optim performed.")
@@ -105,6 +120,7 @@ class VI_IGMM:
         
         np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
         np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
+        np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
         np.save(f"{folder}/kls.npy", self.kls)
 
         
@@ -112,14 +128,63 @@ class VI_IGMM:
 
    
 
+    def plot_estimated(self,  axes = None):
+        
+
+        if self.dim == 2:
+            return 
+        
+
+        elif self.dim>2:
+
+            if axes is None:
+
+                bound = 60
+                grid_size = 100
+                x_grid = np.linspace(-bound, bound, grid_size)
+
+                grid_rows = 3
+                grid_cols = 4
+
+                fig, axes = plt.subplots(4, self.dim//4, figsize=(5 * grid_cols, 4 * grid_rows))
+                axes = axes.flatten()  # Flatten for easy indexing
+
+                mu_final = self.vgmm.optimized_means[0]
+                epsilon_final = self.vgmm.optimized_epsilons[0]
+                pi_mean = self.target.model.means
+                pi_cov = self.target.model.covariances
 
 
-            
+
+            for j in range(self.dim):
+                estimated_marginals = [
+                    norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
+                    for mu, epsilon in zip(mu_final, epsilon_final)
+                ]
+                Z_estimated = np.sum(estimated_marginals, axis=0) / len(estimated_marginals)
+
+                target_marginals = [
+                    norm.pdf(x_grid, loc=pim[j], scale=np.sqrt(pic[j, j]))
+                    for pim, pic in zip(pi_mean, pi_cov)
+                ]
+                Z_target = np.sum(target_marginals, axis=0) / len(target_marginals)
+
+                axes[j].plot(x_grid, Z_estimated, label="MD", color="red", linewidth=3)
+                axes[j].plot(x_grid, Z_target, label="target", color="blue", linestyle="--", linewidth=3)
+                # axes[j].set_title(f"dim {j}", fontweight='bold')
+                axes[j].set_xticks([-50,0, 50])
+                axes[j].set_yticks([])
+
+                
+            plt.legend()
 
 
-                    
+                            
 
 
-            
+                                    
+
+
+                            
 
 

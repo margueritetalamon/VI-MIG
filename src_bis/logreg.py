@@ -27,6 +27,7 @@ class LogReg:
 
         print(self.dim)
 
+
     def generate_cov(self,c = 1, scale = 1, rotate = True, normalize = True ):
 
         vec = (1/np.arange(1,self.dim+1)**c)*scale**2

@@ -3,6 +3,8 @@ import torch.distributions as dist
 import torch
 from einops import rearrange
 from matplotlib import pyplot as plt
+from scipy.stats import norm 
+from matplotlib.patches import Ellipse
 
 
 
@@ -11,6 +13,8 @@ class GMM:
 
         self.variational = variational
         self.mode = mode
+        self.contours = None
+
       
         self.init_gmm(weights , means , covs , n_components, d = d, s = s, scale = scale)
 
@@ -58,6 +62,8 @@ class GMM:
                 cov = A @ A.T  # Ensures positive semi-definiteness
                 cov /= np.max(np.abs(cov))  # Normalize to prevent large values
                 cov *= scale
+                cov = (cov + cov.T) / 2
+                cov += np.eye(d) * 1e-6 
 
             elif mode == "diag":
                 diag = np.random.uniform(1, 10, d) 
@@ -162,7 +168,46 @@ class GMM:
         # return np.log(vgmm.prob(samples[:,None]) / self.prob(samples[:,None])).mean()
         return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples[:,None])).mean()
     
+    def compute_marginals(self, t = None,  bounds = (-20,20), grid_size =  100):
+        ####### TODO 
+        x_grid = np.linspace(-bounds[0], bounds[1], grid_size)
+        mus = self.optimized_means[t] if t else self.means
+        epsilons = self.optimized_epsilons[t] if t else self.epsilons 
+        estimated_marginals = [
+                norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
+                for mu, epsilon in zip(mus, epsilons)
+            ]
+        
 
+    
+    def plot_estimated(self, bound = 20, grid_size = 100):
+        fig, ax = plt.subplots()
+
+
+        if self.dim == 2:
+
+
+            if self.contours:
+                ax.contour(self.contours[0],self.contours[1], self.contours[2], levels=10, cmap="viridis")
+
+            else:
+                x = np.linspace(-bound, bound, grid_size)
+                y = np.linspace(-bound, bound, grid_size)
+                X, Y = np.meshgrid(x, y)
+                pos = np.dstack((X, Y))[:, :, None, :]
+                Z = self.prob(pos)
+                ax.contour(X, Y, Z, levels=10, cmap="viridis")
+                self.contours = (X,Y,Z)
+
+        elif self.dim == 1:
+            x = np.linspace(-bound, bound, grid_size)
+            y = self.prob(x[:,None, None])
+            
+            ax.plot(x, y)
+
+        return ax
+
+    
 
 
 class IGMM(GMM):
@@ -170,6 +215,8 @@ class IGMM(GMM):
 
         self.mode = "iso"
         self.variational = True
+        self.contours = None
+
         self.init_gmm(n_components=n_components, means = means,  covs =  covs, s = s, scale = scale, d = d)
 
         self.optimized_means = [self.means]
@@ -247,7 +294,7 @@ class IGMM(GMM):
         return self.get_means_evolution(), self.get_epsilons_evolution()
 
     
-    def compute_grads_iso(self, target, noise = None, B = 1, optim_epsilon = True):
+    def compute_grads(self, target, noise = None, B = 1, optim_epsilon = True): ### GRAD FOR ISOTROPIC 
 
         samples = self.sample_from_each_gaussian(noise = noise, B = B) # n, b, d
 
@@ -286,7 +333,7 @@ class IGMM(GMM):
             center = self.optimized_means[t][i]
             circle = plt.Circle(
                 (center[0], center[1]),
-                radius=self.optimized_epsilons[t][i],
+                radius=np.sqrt(self.optimized_epsilons[t][i]),
                 color = "black",
                 fill=False,
                 linewidth=1,
@@ -304,6 +351,174 @@ class IGMM(GMM):
 
         for t in range(0, len(self.optimized_means), jump):
             self.plot_circle(t, ax, bound)
+
+
+        
+
+
+
+
+class FGMM(GMM):
+    def __init__(self, means = None, covs = None, n_components = 3, d = 2, s = 10, scale = 1):
+
+        self.mode = "iso"
+        self.variational = True
+        self.contours = None
+
+        self.init_gmm(n_components=n_components, means = means,  covs =  covs, s = s, scale = scale, d = d)
+
+        self.mode = "full"
+
+        self.epsilons = None
+        self.optimized_means = [self.means]
+        self.optimized_covs = [self.covariances]
+        self.optimized_epsilons = [self.epsilons]
+
+    
+
+    def sample(self, B, noise = None, component_indices = None):
+
+        if noise is None:
+            noise = np.random.randn(B, self.dim) 
+            print("Generating noise")
+        if component_indices is None:
+            component_indices = np.random.choice(self.n_components, size=B, p=self.weights)
+
+
+        selected_means = self.means[component_indices]  # (B, d)
+        selected_covariances = self.covariances[component_indices]  # (B, d, d)
+
+
+        L = np.linalg.cholesky(selected_covariances)     # shape (B, d, d)
+
+        samples = selected_means + np.einsum('bij,bj->bi', L, noise)
+
+        return samples
+    
+
+
+    def sample_from_each_gaussian(self, noise = None, B = 1):
+
+        if noise is None:
+            # print("Generating noise")
+            noise = np.random.randn(B, self.dim)
+
+        Ls = np.linalg.cholesky(self.covariances)  # shape: (n_components, d, d)
+    
+   
+        samples = self.means[:, None, :] + np.einsum('cij,bj->cbi', Ls, noise)
+
+        return samples
+
+
+    
+
+    
+
+    def update(self, new_means, new_covs):
+
+        
+        self.optimized_means.append(new_means)
+        self.optimized_covs.append(new_covs)
+
+        self.means = new_means
+        self.covariances = new_covs
+        self.invcov = np.array([np.linalg.inv(cov) for cov in self.covariances])
+
+
+        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
+
+
+    def get_epsilons_evolution(self):
+        print("No epsilons for Full GMM")
+        return np.array(self.optimized_epsilons)
+    
+
+    def get_covariances_evolution(self):
+        return np.array(self.optimized_covs)
+    
+
+    def get_means_evolution(self):
+        return np.array(self.optimized_means)
+    
+
+    def get_params_evolution(self):
+        return self.get_means_evolution(), self.get_covariances_evolution()
+
+    
+    def compute_grads(self, target, noise = None, B = 1, optim_epsilon = True): ### GRADIENT FOR FULL COVS
+
+        samples = self.sample_from_each_gaussian(noise = noise, B = B) # n, b, d
+
+        samples_flat = rearrange(samples, "n b d -> (n b) d")
+
+        grad_log_vgmm = self.gradient_log_density(samples_flat)
+        grad_log_pi = target.gradient_log_density(samples_flat)
+     
+        centered_samples = samples - self.means[:,None] ### n, b, d
+
+
+        # print(grad_log_pi.shape)
+        # print(grad_log_vgmm.shape)
+
+        grad_log_pi = rearrange(grad_log_pi , "(n b) d -> n b d", b = B)
+        grad_log_vgmm = rearrange(grad_log_vgmm , "(n b) d -> n b d", b = B)
+
+        grad_means = (grad_log_vgmm - grad_log_pi).mean(axis = 1)/self.n_components
+
+
+        if optim_epsilon:  ## TODO grad covs
+
+            E_grad_log_pi_centered_s = np.einsum('nbi,nbj->nbij', grad_log_pi, np.einsum('nij,nbj->nbi', self.invcov, centered_samples)).mean(axis = 1)
+            E_grad_log_vgmm_centered_s = np.einsum('nbi,nbj->nbij', grad_log_vgmm, np.einsum('nij,nbj->nbi', self.invcov, centered_samples)).mean(axis = 1)
+
+            grad_covs = (E_grad_log_vgmm_centered_s - E_grad_log_pi_centered_s)/(2*self.n_components) ### n, b
+
+        else:
+            grad_covs = None
+
+        return grad_means, grad_covs
+
+
+    def plot_circle(self, t, ax, bound = 20):
+
+        for i in range(self.n_components):
+            center = self.optimized_means[t][i]
+            cov = self.optimized_covs[t][i]  
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            order = eigvals.argsort()[::-1]
+            eigvals, eigvecs = eigvals[order], eigvecs[:, order]
+            angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+            width = 2  * np.sqrt(eigvals[0])
+            height = 2 * np.sqrt(eigvals[1])
+
+            ellip = Ellipse(xy=center, width=width, height=height, angle=angle,
+                        edgecolor='black', fc='None', lw=1, zorder=10)
+            
+            ax.add_patch(ellip)
+
+
+
+        ax.set_xlim(-bound, bound)
+        ax.set_ylim(-bound, bound)
+        ax.set_aspect('equal')
+
+    
+    def plot_evolution(self, ax, jump = 100, bound = 20):
+
+        for t in range(0, len(self.optimized_means), jump):
+            self.plot_circle(t, ax, bound)
+
+
+        
+
+
+
+
+
+
+
+
 
 
 
