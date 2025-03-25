@@ -92,7 +92,11 @@ class VI_GMM:
 
             
             elif lin : 
-                raise ValueError("Not available yet")
+                new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * learning_rate * grad_means
+
+                inv_new_epsilons = (1/self.vgmm.epsilons) + (2 * learning_rate * grad_covs / self.dim)
+                new_epsilons = (inv_new_epsilons)**(-1)
+
                     
             elif means_only:
                 new_epsilons = None
