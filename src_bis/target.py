@@ -1,8 +1,11 @@
 from src_bis.gmm import GMM
 from src_bis.logreg import LogReg
+from src_bis.funnel import Funnel
 
 from matplotlib import  pyplot as plt
 import numpy as np 
+from  einops import rearrange 
+
 
 class Target:
     def __init__(self, name = "gmm", mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, dataset = None, d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1):
@@ -15,6 +18,9 @@ class Target:
 
         elif self.name == "logreg":
             self.model = LogReg(dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed)
+
+        elif self.name == "funnel":
+            self.model = Funnel()
 
 
         self.dim = self.model.dim
@@ -37,7 +43,15 @@ class Target:
                 y = np.linspace(-bound, bound, grid_size)
                 X, Y = np.meshgrid(x, y)
                 pos = np.dstack((X, Y))[:, :, None, :]
+                if self.name == "funnel":
+                    pos = rearrange(pos[:,:, 0], "h w d -> (h w) d")
+
                 Z = self.model.prob(pos)
+
+                if self.name == "funnel":
+                    Z = rearrange(Z, "(h w) -> h w", h  = grid_size)
+                    
+
                 ax.contour(X, Y, Z, levels=10, cmap="viridis")
                 self.contours = (X,Y,Z)
 
@@ -50,5 +64,7 @@ class Target:
         return ax
 
         
+
+
             
 

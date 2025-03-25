@@ -45,7 +45,7 @@ class VI_GMM:
 
         return new_learning_rate
     
-    def optimize(self, bw = True, md = False, means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False):
+    def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False):
 
 
         initial_lr =  self.learning_rate
@@ -89,6 +89,10 @@ class VI_GMM:
 
             elif md:
                 new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
+
+            
+            elif lin : 
+                raise ValueError("Not available yet")
                     
             elif means_only:
                 new_epsilons = None
