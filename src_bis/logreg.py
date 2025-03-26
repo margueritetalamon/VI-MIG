@@ -1,13 +1,16 @@
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import numpy.linalg as LA 
-from src_bis.gmm import GMM
+from scipy.stats import multivariate_normal 
 from scipy.stats import special_ortho_group
+
+
+from src_bis.gmm import GMM
 
 import  math
 
 class LogReg:
-    def __init__(self, dataset=None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1):
+    def __init__(self, dataset=None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1, prior_mean = None, prior_eps = None ):
         
         self.scaler = StandardScaler()
         self.Z = Z
@@ -22,6 +25,11 @@ class LogReg:
             self.generate_data(n_samples )
         else:
             self.load_data(dataset)
+ 
+        self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.dim)
+        self.prior_eps  = prior_eps if prior_eps is not None else 1
+
+        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
 
 
 
@@ -54,6 +62,7 @@ class LogReg:
         self.mean1 = -mean*self.meanShift/2
         # self.cov = GMM.generate_random_covs( n = 1, d = self.dim, mode = "iso", scale=np.sqrt(self.dim))[0]
         # self.cov = np.eye(self.dim)*self.dim
+        np.random.seed(self.seed)
         self.cov = self.cov if self.cov is not None  else self.generate_cov()
        
 
@@ -84,37 +93,53 @@ class LogReg:
         return 1/(1+np.exp(-x))
     
 
-    def unormalized_logpdf(self, theta): ###  log likelihood for the parameter theta theta of  shape B, d
+    def log_likelihood(self, theta): ###  log likelihood for the parameter theta theta of  shape B, d
         logits = np.dot(self.X, theta.T)
-        logpdf = (self.y[:,None] * logits - np.log(1 + np.exp(logits))).sum(axis =  0)
-        return logpdf
-        
+        lll = (self.y[:,None] * logits - np.log(1 + np.exp(logits))).sum(axis =  0)
+        return lll
     
-    def prob(self, X): ### for a theta (fixed) gives the prediction y in function of X
-        ####  inference function after OPTIM 
-        #### TO BE CHECKED
-
-        X_scaled = self.scaler.transform(X)
-        logits = np.dot(X_scaled, self.theta) 
-        return self.sigmoid(logits)
     
-
-    def log_prob(self, X):  ###TO BE CHECKED
-        probs = self.prob(X)
-        return np.log(probs)
-
-
-    def gradient_log_density(self, theta): 
+    def gradient_log_likelihood(self, theta): 
         ### theta can be a sample so of shape B, d
 
         logits = np.dot(self.X, theta.T)
         residuals  =  (self.y[:,None] - self.sigmoid(logits))[:,:, None]
         return (self.X[:,None,:] *  residuals).sum(axis = 0) ### shape  B, d 
+    
+    def grad_log_prior(self, theta):
+        ### theta of shape B,d 
+        return - (theta - self.prior_mean)/self.prior_eps
+    
+        
+    def gradient_log_density(self, theta): 
+        ### theta can be a sample so of shape B, d
+
+        return self.gradient_log_likelihood(theta) + self.grad_log_prior(theta)
+    
+    
+    # def prob(self, X): ### for a theta (fixed) gives the prediction y in function of X
+    #     ####  inference function after OPTIM 
+    #     #### TO BE CHECKED
+
+    #     X_scaled = self.scaler.transform(X)
+    #     logits = np.dot(X_scaled, self.theta) 
+    #     return self.sigmoid(logits)
+    
+
+    def prob(self, X):  ###
+        probs = self.log_prob(X)
+        return np.exp(probs)
+
+
+    def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
+        
+        return self.log_likelihood(theta) + self.prior.logpdf(theta)
+
 
 
     def compute_KL(self, vgmm, noise = None, component_indices = None , B = 1000):
         samples = vgmm.sample(B, noise, component_indices)
 
-        return (vgmm.log_prob(samples[:,None]) - self.unormalized_logpdf(samples)).mean()
+        return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples)).mean()
 
         # return (GM_entropy - self.unormalized_logpdf(samples)).mean()

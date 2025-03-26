@@ -198,6 +198,8 @@ class GMM:
                 Z = self.prob(pos)
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
+            ax.set_aspect('equal')
+
 
         elif self.dim == 1:
             x = np.linspace(-bound, bound, grid_size)
