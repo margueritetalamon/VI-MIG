@@ -14,6 +14,7 @@ class GMM:
         self.variational = variational
         self.mode = mode
         self.contours = None
+        self.num_stab = 0
 
       
         self.init_gmm(weights , means , covs , n_components, d = d, s = s, scale = scale)
@@ -98,7 +99,7 @@ class GMM:
 
     
 
-    def prob(self, x):
+    def prob1(self, x):
         ### x needs to be B, 1, d
 
         if not isinstance(x, torch.Tensor):
@@ -106,8 +107,21 @@ class GMM:
 
         return (self.gaussians.log_prob(x).exp() * self.weights).sum(dim = -1).numpy()
     
+
+
+    def prob(self, x):
+        ### x needs to be B, 1, d
+
+        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))
+
+        log_prob_c = np.clip(log_prob , -700, 700).numpy()
+        prob_c = np.exp(log_prob_c)
+
+        return (self.weights[None] * prob_c).sum(axis = -1)
+    
+
     def log_prob(self,x):
-        return np.log(self.prob(x))
+        return np.log(self.prob(x) + self.num_stab)
     
 
     def sample(self, B, noise = None, component_indices = None):
@@ -137,14 +151,40 @@ class GMM:
     #     return self.means[:,None,:] +  (np.sqrt(self.epsilons[:,None, None]) * noise)
     
 
-    def gradient_log_density(self, x): #### grad of the log density, ie - grad V 
+
+    def gradient_log_density_1(self, x): #### grad of the log density, ie - grad V 
 
         invcov_by_centered = np.einsum("ndd,bnd->bnd", self.invcov, (x[:,None] - self.means[None])) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
-        probs = self.gaussians.log_prob(torch.as_tensor(x[:,None])).exp().numpy()[..., None] ### gives B,N,1
+        probs = self.gaussians.log_prob(torch.as_tensor(x[:,None]) + self.num_stab).exp().numpy()[..., None] ### gives B,N,1
         numerator = - (self.weights[None,:,None] * invcov_by_centered * probs).sum(axis = 1) ### B, d
         denominator = self.prob(x[:, None])[:, None]
 
-        return numerator/denominator
+        return (numerator+self.num_stab)/(denominator+self.num_stab)
+    
+
+# log_prob = vgmm.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None].numpy()# B, Ntarget
+# mean_logprob = log_prob.mean(axis = 0)
+# mean_logprob = 0
+
+# # log_prob_c = np.clip(log_prob - mean_logprob, -700, 700).numpy()
+# log_prob_c = log_prob - mean_logprob
+# prob_c = np.exp(log_prob_c)
+# numerator = - (vgmm.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1)
+# denominator = (vgmm.weights[None,:,None]*prob_c).sum(axis = 1)
+    def gradient_log_density(self, x): #### PREVENT NUMERICAL INTABILITY
+
+        invcov_by_centered = np.einsum("ndd,bnd->bnd", self.invcov, (x[:,None] - self.means[None])) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
+        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None].numpy()# B, Ntarget
+        # mean_logprob = log_prob.mean(axis = 0)
+        mean_logprob = 0
+
+        # log_prob_c = np.clip(log_prob - mean_logprob, -700, 700).numpy()
+        log_prob_c = log_prob - mean_logprob
+        prob_c = np.exp(log_prob_c)
+        numerator = - (self.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1)
+        denominator = (self.weights[None,:,None]*prob_c).sum(axis = 1)
+
+        return (numerator + self.num_stab)/(denominator + self.num_stab)
     
     
     def get_means_evolution(self):
@@ -166,21 +206,40 @@ class GMM:
         samples = vgmm.sample(B, noise, component_indices)
    
         # return np.log(vgmm.prob(samples[:,None]) / self.prob(samples[:,None])).mean()
-        return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples[:,None])).mean()
+        return (vgmm.log_prob(samples[:,None] + self.num_stab) - self.log_prob(samples[:,None] + self.num_stab)).mean()
     
-    def compute_marginals(self, t = None,  bounds = (-20,20), grid_size =  100):
+    def compute_marginals(self, target, axes = None, t = None,  bounds = (-20,20), grid_size =  100):
         ####### TODO 
+
         x_grid = np.linspace(-bounds[0], bounds[1], grid_size)
         mus = self.optimized_means[t] if t else self.means
-        epsilons = self.optimized_epsilons[t] if t else self.epsilons 
-        estimated_marginals = [
-                norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
-                for mu, epsilon in zip(mus, epsilons)
+        epsilons = self.optimized_covs[t] if t else self.epsilons 
+
+        for j  in range(self.dim):
+
+            estimated_marginals = [
+                    norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
+                    for mu, epsilon in zip(mus, epsilons)]
+            
+            Z_estimated = np.sum(estimated_marginals, axis=0) / len(estimated_marginals)
+            axes[j].plot(x_grid, Z_estimated, label="estimated", color="red", linewidth=3)
+
+
+            target_marginals = [
+                norm.pdf(x_grid, loc=pim[j], scale=np.sqrt(pic[j, j]))
+                for pim, pic in zip(target.model.means, target.model.covariances)
             ]
+
+            Z_target = np.sum(target_marginals, axis=0) / len(target_marginals)
+
+
+
+
         
 
     
     def plot_estimated(self, bound = 20, grid_size = 100):
+
         fig, ax = plt.subplots()
 
 
@@ -218,6 +277,7 @@ class IGMM(GMM):
         self.mode = "iso"
         self.variational = True
         self.contours = None
+        self.num_stab = 0
 
         self.init_gmm(n_components=n_components, means = means,  covs =  covs, s = s, scale = scale, d = d)
 
@@ -254,9 +314,11 @@ class IGMM(GMM):
         # return self.gaussians.sample((B,)).numpy() ### shape B, N, d
     
     ### unifrom weights and isotropic
-    def gradient_log_density(self, x): #### grad of the log density, ie - grad V 
+    def gradient_log_density_1(self, x): #### grad of the log density, ie - grad V 
         
         invcov_by_centered = ((x[:,None] - self.means[None]) / self.epsilons[None,:,None]) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
+
+        
         probs = self.gaussians.log_prob(torch.as_tensor(x[:,None])).exp().numpy()[..., None] ### gives B,N,1
         # print(type(probs))
         # print(type(self.weights))
@@ -264,8 +326,32 @@ class IGMM(GMM):
         numerator = - (self.weights[None,:,None] * invcov_by_centered * probs).sum(axis = 1) ### B, d
         denominator = self.prob(x[:, None])[:, None]
 
-        return numerator/denominator
+        return (numerator)/(denominator)
     
+    
+    
+    def gradient_log_density(self, x): #### grad of the log density, ie - grad V  PREVENT NUMERICAL INSTABILITY
+        
+        invcov_by_centered = ((x[:,None] - self.means[None]) / self.epsilons[None,:,None]) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
+
+
+        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None]
+        # mean_logprob = log_prob.mean(dim = 0)
+        mean_logprob = 0
+        
+        log_prob_c = np.clip(log_prob - mean_logprob, -700, 700).numpy()
+
+        prob_c = np.exp(log_prob_c)
+    
+    
+        numerator = - (self.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1) ### B, d
+        denominator = (self.weights[None,:,None] * prob_c).sum(axis = 1)
+
+        return (numerator + self.num_stab)/(denominator + self.num_stab)
+
+
+
+  
 
     def update(self, new_means, new_epsilons):
 
@@ -369,6 +455,7 @@ class FGMM(GMM):
 
         self.init_gmm(n_components=n_components, means = means,  covs =  covs, s = s, scale = scale, d = d)
 
+        self.num_stab = 0
         self.mode = "full"
 
         self.epsilons = None

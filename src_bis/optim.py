@@ -9,21 +9,27 @@ from scipy.stats import norm
 
 
 class VI_GMM:
-    def __init__(self, target , mode = "iso", n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1,  **kwargs):
+    def __init__(self, target , mode = "iso", n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1, num_stab  = 0,  **kwargs):
         
         self.target = target
+
+        self.dim = self.target.model.dim
         self.target_family = self.target.name
         self.mode = mode
+        self.num_stab = num_stab
 
 
         if mode == "full":
-            self.vgmm = FGMM(**kwargs)
+            self.vgmm = FGMM(d = self.dim, **kwargs)
 
         elif  mode == "iso":
-            self.vgmm = IGMM(**kwargs)
+            self.vgmm = IGMM(d = self.dim, **kwargs)
+
         self.dim = self.vgmm.dim
         
 
+        self.vgmm.num_stab = self.num_stab
+        self.target.model.num_stab = self.num_stab
 
         self.n_iterations = n_iterations
         self.learning_rate = learning_rate
@@ -73,7 +79,7 @@ class VI_GMM:
             if scheduler:
 
                 learning_rate = self.lr_step_based_decay(_, initial_lr)
-                print(learning_rate)
+                # print(learning_rate)
 
             new_means = self.vgmm.means - learning_rate * grad_means
 
@@ -113,6 +119,10 @@ class VI_GMM:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
 
+
+
+
+
     
     def plot_target_and_circles(self,jump = 1000, bound = 20, grid_size = 100):
 
@@ -121,11 +131,8 @@ class VI_GMM:
 
     
 
-    def save(self, folder, file_name):
-        if self.target_family == "gmm":
-            np.save(f"{folder}/pi_means.npy", self.target.model.means)
-            np.save(f"{folder}/pi_covs.npy", self.target.model.covariances)
-        
+    def save(self, folder):
+               
         np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
         np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
         np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)

@@ -1,5 +1,5 @@
 from src_bis.gmm import GMM
-from src_bis.logreg import LogReg
+from src_bis.logreg import LogReg, LogReg_withBNN
 from src_bis.funnel import Funnel
 
 from matplotlib import  pyplot as plt
@@ -22,6 +22,9 @@ class Target:
         elif self.name == "funnel":
             self.model = Funnel()
 
+
+        elif self.name == "bnn":
+            self.model = LogReg_withBNN(dataset = dataset, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean  )
 
         self.dim = self.model.dim
 
