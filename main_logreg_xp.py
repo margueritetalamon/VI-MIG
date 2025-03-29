@@ -53,8 +53,8 @@ def main(args):
     dataset_train , dataset_test = prepare_dataset(args.dataset_name)
     n_samples, d = dataset_train[0].shape
 
-    vgmm_sample_boule = 10 * np.sqrt(d) / 10
-    vgmm_scale_cov  = 5 * np.sqrt(d) / 10
+    vgmm_sample_boule = 1 * np.sqrt(d) 
+    vgmm_scale_cov  = 10 * np.sqrt(d) 
 
 
 
@@ -68,20 +68,20 @@ def main(args):
                   "B_gradients" : args.B_gradients,
                   "target" :  args.target, 
                   "dataset": args.dataset_name,
-                  "n_classes": args.n_classes,
                   "vgmm_sample_boule" : vgmm_sample_boule,
                   "vgmm_scale_cov" : vgmm_scale_cov,
                   "prior_eps" : args.prior_eps
     }
 
 
-    
-
-    target = Target("logreg", dataset = dataset_train,  prior_eps = args.prior_eps)
 
 
+    target = Target(args.target, dataset = dataset_train,  prior_eps = args.prior_eps)
 
-   
+
+
+    hyperparam["n_classes"] = target.model.n_classes
+
 
     
 
@@ -92,9 +92,9 @@ def main(args):
     with open(os.path.join(folder_name , "hp.json"), "w") as outfile:
         json.dump(hyperparam, outfile, indent=4)
 
-
-    np.save( f"{folder_name}/pi_mean.npy", np.array(target.model.means))
-    np.save( f"{folder_name}/pi_cov.npy", target.model.cov)
+    if args.dataset_name == "synthetic":
+        np.save( f"{folder_name}/pi_mean.npy", np.array(target.model.means))
+        np.save( f"{folder_name}/pi_cov.npy", target.model.cov)
 
 
 

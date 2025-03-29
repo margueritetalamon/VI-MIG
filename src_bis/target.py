@@ -30,7 +30,7 @@ class Target:
             self.model = LogReg_withBNN(dataset = dataset, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean  )
 
         elif self.name == "mlogreg":
-            self.model = MultiClassLogReg(dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
+            self.model = MultiClassLogReg(dataset  = dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
 
 
         self.dim = self.model.dim
