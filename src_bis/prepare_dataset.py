@@ -1,6 +1,7 @@
 from sklearn.datasets import load_breast_cancer
 from ucimlrepo import fetch_ucirepo 
 import numpy as np
+import pandas as pd 
 
 
   
@@ -41,6 +42,15 @@ def prepare_dataset(name, train_ratio = 0.6):
         
         X = covertype.data.features.values
         y = covertype.data.targets.values - 1 ##  to 1,2.., K to 0,1,2, K-1
+
+    if name == "boston":
+
+        data_url = "http://lib.stat.cmu.edu/datasets/boston"
+        raw_df = pd.read_csv(data_url, sep="\s+", skiprows=22, header=None).dropna(axis = 0)
+        y = raw_df.values[:, 2]
+        y = y[..., None]
+        X = np.concatenate([raw_df.values[:, :2], raw_df.values[:, 3:]], axis = 1)
+
 
 
 

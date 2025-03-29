@@ -1,5 +1,7 @@
 from src_bis.gmm import GMM
 from src_bis.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
+from src_bis.linreg import LinReg
+
 from src_bis.funnel import Funnel
 
 from matplotlib import  pyplot as plt
@@ -31,6 +33,11 @@ class Target:
 
         elif self.name == "mlogreg":
             self.model = MultiClassLogReg(dataset  = dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
+
+
+        elif self.name == "linreg":
+            self.model = LinReg(dataset  = dataset, prior_eps=prior_eps, prior_mean=prior_mean)
+
 
 
         self.dim = self.model.dim
