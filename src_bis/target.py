@@ -1,5 +1,5 @@
 from src_bis.gmm import GMM
-from src_bis.logreg import LogReg, LogReg_withBNN
+from src_bis.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
 from src_bis.funnel import Funnel
 
 from matplotlib import  pyplot as plt
@@ -8,7 +8,10 @@ from  einops import rearrange
 
 
 class Target:
-    def __init__(self, name = "gmm", mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, dataset = None, d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None):
+    def __init__(self, name = "gmm",
+                mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
+                dataset = None, d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
+                n_classes = 3): ### multiclass logreg traget param 
 
         
         self.name = name 
@@ -25,6 +28,10 @@ class Target:
 
         elif self.name == "bnn":
             self.model = LogReg_withBNN(dataset = dataset, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean  )
+
+        elif self.name == "mlogreg":
+            self.model = MultiClassLogReg(dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
+
 
         self.dim = self.model.dim
 
@@ -51,10 +58,10 @@ class Target:
 
                 Z = self.model.prob(pos)
 
-                if self.name in ["funnel",  "logreg"]:
+                if self.name in ["funnel",  "logreg", "mlogreg"]:
                     Z = rearrange(Z, "(h w) -> h w", h  = grid_size)
 
-                    if self.name == "logreg":
+                    if self.name in ["logreg", "mlogreg"]:
                         Z = Z/Z.sum()
                     
 

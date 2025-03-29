@@ -3,6 +3,7 @@ from sklearn.preprocessing import StandardScaler
 import numpy.linalg as LA 
 from scipy.stats import multivariate_normal 
 from scipy.stats import special_ortho_group
+from einops import rearrange
 
 
 from src_bis.gmm import GMM
@@ -516,3 +517,144 @@ class LogReg_withBNN:
         return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples)).mean()
 
         # return (GM_entropy - self.unormalized_logpdf(samples)).mean()
+
+
+
+
+
+
+
+class MultiClassLogReg(LogReg):
+    def __init__(self, n_classes=3, **kwargs):
+        super().__init__(**kwargs)
+
+
+
+        self.n_classes = len(set(kwargs["dataset"][-1].tolist())) if kwargs["dataset"] is not None else n_classes
+
+        self.data_dim = self.dim
+        self.param_dim = self.data_dim * self.n_classes
+        self.dim = self.param_dim
+        self.name = "Multi_LogReg"
+
+
+        self.prior_mean = np.zeros(self.dim)
+        self.prior_eps  = 1
+
+
+        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
+
+
+
+    def generate_data(self, n_samples):
+        np.random.seed(self.seed)
+        n_samples_per_class = n_samples // self.n_classes
+        
+        # Ensure a covariance matrix is available.
+        self.cov = self.cov if self.cov is not None else self.generate_cov()
+        
+        # Create class means:
+        if self.dim == 2:
+            # For 2D, equally space the means around a circle.
+            angles = np.linspace(0, 2 * np.pi, self.n_classes, endpoint=False)
+            self.means = [np.array([np.cos(a), np.sin(a)]) * self.meanShift for a in angles]
+        else:
+            # For d > 2, generate random directions on the unit hypersphere.
+            self.means = []
+            for _ in range(self.n_classes):
+                vec = np.random.randn(self.dim)
+                vec /= LA.norm(vec)
+                self.means.append(vec * self.meanShift)
+        
+        # Generate data for each class.
+        X_list = []
+        y_list = []
+        for i, mean in enumerate(self.means):
+            X_i = np.random.multivariate_normal(mean, self.cov, n_samples_per_class)
+            y_i = np.full(n_samples_per_class, i)
+            X_list.append(X_i)
+            y_list.append(y_i)
+        
+        # Concatenate all classes and shuffle.
+        X = np.concatenate(X_list)
+        y = np.concatenate(y_list)
+        X = self.scaler.fit_transform(X)
+        
+        data = list(zip(y, X))
+        np.random.shuffle(data)
+        self.y, self.X = zip(*data)
+        self.y = np.array(self.y)
+        self.X = np.array(self.X)
+
+
+        ###  loglikelihood 
+    def log_likelihood(self, theta):
+        # theta is of shape B, d, K 
+
+        if theta.ndim == 2:
+            theta = self.unpack_theta(theta)
+
+        K = self.n_classes
+
+        logits = np.einsum("nd,bdk->bnk", self.X, theta) # B, n_samples, K 
+        exp_logits = np.exp(logits)
+        sum_exp_logits = exp_logits.sum(axis =  -1) # B, n_samples
+        ((logits - np.log(sum_exp_logits)[..., None])[:, (self.y[..., None] == np.arange(0, K))]) ### B, n_samples
+
+        return ((logits - np.log(sum_exp_logits)[..., None])[:, (self.y[..., None] == np.arange(0, K))]).sum(axis = -1) ### B 
+
+
+
+
+    def grad_log_prior(self, theta):
+            ### theta of shape B, d*k 
+
+            if theta.ndim == 3: # theta B, d , k
+                theta = self.flatten_theta(theta)
+
+
+            return - (theta - self.prior_mean)/self.prior_eps
+
+
+    def unpack_theta(self, theta):
+        ## theta of shape B, d * k 
+        return rearrange(theta, "B (d k) -> B d k", k = self.n_classes )
+    
+    def flatten_theta(self, theta):
+        ### theta of  shape B, d, k
+        return rearrange(theta, "B d k -> B (d k)")      
+    
+
+
+    def gradient_log_likelihood(self, theta):
+        
+        if theta.ndim == 2: # theta B, (d * k)
+            theta = self.unpack_theta(theta)
+
+        ##  else theta already theta B, d , k
+        logits= np.einsum("nd,bdk->bnk", self.X, theta) # B, n_samples, K 
+        exp_logits = np.exp(logits)
+
+        denominator = exp_logits.sum(axis =  -1)
+        probs = exp_logits/denominator[..., None]
+
+        indicatrix = (self.y[..., None] == np.arange(0, self.n_classes))
+        grad_forall_k = np.einsum("nd,bnk->bdk", self.X, (indicatrix[None, :, :] - probs))
+        grad_flatten = rearrange(grad_forall_k, "B d k -> B (d k)" )
+        return  grad_flatten
+    
+
+    def gradient_log_density(self, theta): 
+        ### theta can be a sample so of shape B, d*k or B, d, k 
+
+        return self.gradient_log_likelihood(theta) + self.grad_log_prior(theta)  ### flatten so of shape B , (d*k)
+    
+
+    def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
+
+        return self.log_likelihood(theta) + self.prior.logpdf(theta)
+
+
+
+      
+    

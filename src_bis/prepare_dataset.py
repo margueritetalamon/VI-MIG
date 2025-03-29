@@ -21,7 +21,7 @@ def prepare_dataset(name, train_ratio = 0.6):
         wine = fetch_ucirepo(id=109) 
         
         X = wine.data.features.values
-        y = wine.data.targets.values - 1 ##   to 0 and 1
+        y = wine.data.targets.values - 1 ##  to 1,2,3 to 0,1,2
 
     
     if name == "toxicity":
@@ -34,6 +34,18 @@ def prepare_dataset(name, train_ratio = 0.6):
         y = y.replace("Toxic", 1)
         y  = y.replace("NonToxic", 0)
         y = y.values
+
+    if name == "covertype":
+
+        covertype = fetch_ucirepo(id=31) 
+        
+        X = covertype.data.features.values
+        y = covertype.data.targets.values - 1 ##  to 1,2.., K to 0,1,2, K-1
+
+
+
+    if name == "synthetic":
+        return None, None
 
 
     N, d = X.shape
