@@ -21,12 +21,13 @@ def parse_args():
     parser = argparse.ArgumentParser(description="Run Gaussian mixture optimization experiments.")
     parser.add_argument("--d", type=int, default=10, help="Dimensionality of the data (d).")
     parser.add_argument("--target", type=str, default="gmm", help="Target type")
-    parser.add_argument("--dataset_name", type=str, default="sythetic", help="Dataset name, please choose between [breast_cancer, wine, toxicity and synthetic]")
+    parser.add_argument("--dataset_name", type=str, default="sythetic", help="Dataset name, please choose between [breast_cancer, wine, toxicity, boston and synthetic]")
     parser.add_argument("--train_ratio", type=float, default=0.5, help="Datas training ratio")
     parser.add_argument("--prior_eps", type=float, default=100, help="Espilon prior")
     parser.add_argument("--lr_mu", type=float, default=1, help="Learning rate for mu")
     parser.add_argument("--lr_eps", type=float, default=1, help="Learning rate for epsilon")
     parser.add_argument("--B_gradients", type=int, default=100, help="Batch size for Monte Carlo estimation.")
+    parser.add_argument("--hidden_units", type=int, default=10, help="If BNN hidden units")
     parser.add_argument("--B_kls", type=int, default=1000, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--n_iter", type=int, default=1000, help="Number of iterations")
     parser.add_argument("--nxp", type=int, default=1, help="Number of time to do the same xp")
@@ -50,11 +51,13 @@ def main(args):
     folder_name = os.path.join("REBUTTAL" , exp_name, current_datetime)
 
    
-    dataset_train , dataset_test = prepare_dataset(args.dataset_name)
+    dataset_train , dataset_test = prepare_dataset(args.dataset_name, args.train_ratio)
+    del dataset_test
     n_samples, d = dataset_train[0].shape
 
-    vgmm_sample_boule = 1 * np.sqrt(d) 
-    vgmm_scale_cov  = 10 * np.sqrt(d) 
+    # vgmm_sample_boule = 1 * np.sqrt(d) 
+    vgmm_sample_boule = 1 
+    vgmm_scale_cov  =  np.sqrt(d) / 10
 
 
 
@@ -70,17 +73,19 @@ def main(args):
                   "dataset": args.dataset_name,
                   "vgmm_sample_boule" : vgmm_sample_boule,
                   "vgmm_scale_cov" : vgmm_scale_cov,
-                  "prior_eps" : args.prior_eps
+                  "prior_eps" : args.prior_eps,
+                  "hidden_units" : args.hidden_units,
+
     }
 
 
 
 
-    target = Target(args.target, dataset = dataset_train,  prior_eps = args.prior_eps)
+    target = Target(args.target, dataset = dataset_train,  prior_eps = args.prior_eps, hidden_units=args.hidden_units)
 
 
-
-    hyperparam["n_classes"] = target.model.n_classes
+    if target.name == "logreg":
+        hyperparam["n_classes"] = target.model.n_classes
 
 
     
@@ -122,7 +127,7 @@ def main(args):
         np.save( f"{folder_name}/N{N_mixture}/vgmm_mean.npy", vi.vgmm.means)
         np.save( f"{folder_name}/N{N_mixture}/vgmm_cov.npy", vi.vgmm.covariances)
 
-        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=1000, gen_noise=True) 
+        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=10, gen_noise=True) 
         folder_xp = os.path.join(folder_name, f"N{N_mixture}", "ibw")
         os.makedirs(folder_xp, exist_ok=True)
 

@@ -1,6 +1,6 @@
 from src_bis.gmm import GMM
 from src_bis.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
-from src_bis.linreg import LinReg
+from src_bis.linreg import LinReg, LinReg_BNN
 
 from src_bis.funnel import Funnel
 
@@ -13,7 +13,8 @@ class Target:
     def __init__(self, name = "gmm",
                 mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
                 dataset = None, d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
-                n_classes = 3): ### multiclass logreg traget param 
+                n_classes = 3, ### multiclass logreg traget param 
+                hidden_units = 10): ### lin reg param 
 
         
         self.name = name 
@@ -37,6 +38,9 @@ class Target:
 
         elif self.name == "linreg":
             self.model = LinReg(dataset  = dataset, prior_eps=prior_eps, prior_mean=prior_mean)
+
+        elif self.name == "linreg_bnn":
+            self.model = LinReg_BNN(dataset  = dataset, prior_eps=prior_eps, prior_mean=prior_mean, hidden_units = hidden_units)
 
 
 
