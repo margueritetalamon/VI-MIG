@@ -74,7 +74,10 @@ class Target:
 
                     if self.name in ["logreg", "mlogreg"]:
                         Z = Z/Z.sum()
-                    
+                
+                if self.name == "gmm":
+                    Z = Z[:,0,:]
+                print(Z.shape)
 
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)

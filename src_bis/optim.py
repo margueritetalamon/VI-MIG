@@ -51,7 +51,7 @@ class VI_GMM:
 
         return new_learning_rate
     
-    def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False):
+    def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False, compute_kl = 1000):
 
 
         initial_lr =  self.learning_rate
@@ -94,7 +94,7 @@ class VI_GMM:
                     new_epsilons = M * self.vgmm.covariances * M 
 
             elif md:
-                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
+                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs / self.dim)
 
             
             elif lin : 
@@ -114,8 +114,12 @@ class VI_GMM:
 
             self.vgmm.update(new_means, new_epsilons)
 
-            self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
+            # self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
+            if _ % compute_kl == 0:
+                self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
+
             if _ % plot_iter == 0:
+
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
 
@@ -135,7 +139,9 @@ class VI_GMM:
                
         np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
         np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
-        np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
+        if self.mode == "full":
+            np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
+
         np.save(f"{folder}/kls.npy", self.kls)
 
         

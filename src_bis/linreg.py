@@ -167,14 +167,24 @@ class LinReg_BNN:
 
         print(self.dim)
 
+    
+
+    def batchized_data(self, M = 32):
+
+        indices = np.random.permutation(len(self.X))[:M]
+        # print(indices[:2])
+        # print(indices.shape)
+        X = self.X[indices]
+        y = self.y[indices]
+        return X, y
+
         
 
     def load_data(self, dataset):
         X, y = dataset
-        ones = np.ones((X.shape[0], 1))
+        # ones = np.ones((X.shape[0], 1))
         X = self.scaler.fit_transform(X)
-
-        X = np.concatenate([X, ones], axis=1)
+        # X = np.concatenate([X, ones], axis=1) ### no need in Bnn there is the bias 
         self.X = X
         # self.y = y.reshape(-1, 1)
         self.y = y
@@ -191,11 +201,12 @@ class LinReg_BNN:
     
     def gradient_log_likelihood(self, theta): 
         ### theta can be a sample so of shape B, d
+        X,y  = self.batchized_data()
 
-        logits = self.neural_network.forward(theta, self.X) # B, n_samples
-        gradients = self.neural_network.compute_gradients(theta, self.X) # B, n , dim_params
+        logits = self.neural_network.forward(theta, X) # B, n_samples
+        gradients = self.neural_network.compute_gradients(theta, X) # B, n , dim_params
         
-        return ((self.y - logits)[..., None]*gradients/self.prior_eps).sum(axis = 1) ### shape  B, dim_params
+        return ((y - logits)[..., None]*gradients/self.prior_eps).sum(axis = 1) ### shape  B, dim_params
     
     def grad_log_prior(self, theta):
         ### theta of shape B,d 

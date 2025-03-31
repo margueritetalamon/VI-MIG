@@ -22,9 +22,11 @@ class GMM:
 
         if self.variational:
             self.optimized_means = [self.means]
-            self.optimized_covs = [self.covariances]
             if self.mode == "iso":
                 self.optimized_epsilons = [self.epsilons]
+            elif self.mode == "full":
+                self.optimized_covs = [self.covariances]
+
 
 
 
@@ -360,14 +362,14 @@ class IGMM(GMM):
         self.optimized_epsilons.append(new_epsilons)
 
         new_covs = (new_epsilons[:,None,None] * np.eye(self.dim))
-        self.optimized_covs.append(new_covs)
+        # self.optimized_covs.append(new_covs)
 
 
         self.epsilons = new_epsilons
         self.means = new_means
-        self.covariances = new_covs
+        # self.covariances = new_covs
 
-        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
+        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(new_covs)) 
 
 
     def get_epsilons_evolution(self):

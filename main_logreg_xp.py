@@ -56,8 +56,8 @@ def main(args):
     n_samples, d = dataset_train[0].shape
 
     # vgmm_sample_boule = 1 * np.sqrt(d) 
-    vgmm_sample_boule = 1 
-    vgmm_scale_cov  =  np.sqrt(d) / 10
+    vgmm_sample_boule = 10
+    vgmm_scale_cov  =  10
 
 
 
@@ -84,7 +84,7 @@ def main(args):
     target = Target(args.target, dataset = dataset_train,  prior_eps = args.prior_eps, hidden_units=args.hidden_units)
 
 
-    if target.name == "logreg":
+    if target.name in ["logreg", "mlogreg"]:
         hyperparam["n_classes"] = target.model.n_classes
 
 
@@ -127,7 +127,7 @@ def main(args):
         np.save( f"{folder_name}/N{N_mixture}/vgmm_mean.npy", vi.vgmm.means)
         np.save( f"{folder_name}/N{N_mixture}/vgmm_cov.npy", vi.vgmm.covariances)
 
-        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=10, gen_noise=True) 
+        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=1000, gen_noise=True) 
         folder_xp = os.path.join(folder_name, f"N{N_mixture}", "ibw")
         os.makedirs(folder_xp, exist_ok=True)
 
