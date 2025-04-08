@@ -1,6 +1,6 @@
 
-from src_bis.optim import VI_GMM
-from src_bis.target import Target
+from src.optim import VI_GMM
+from src.target import Target
 
 import json
 import argparse
@@ -43,12 +43,12 @@ def main(args):
 
 
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    folder_name = os.path.join("REBUTTAL" , exp_name, current_datetime)
+    folder_name = os.path.join(exp_name, current_datetime)
 
    
 
     target_gmm_mode =  "iso" # "full", "diag"
-    n_target = 2
+    n_target = 10
     target_sample_boule = 4 * np.sqrt(d) 
     target_scale_cov  = 8 * np.sqrt(d)  
 

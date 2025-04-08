@@ -1,5 +1,5 @@
-from src_bis.gmm import GMM, IGMM, FGMM
-from src_bis.logreg import LogReg
+from src.gmm import GMM, IGMM, FGMM
+from src.logreg import LogReg
 
 import numpy as np
 import tqdm
@@ -94,7 +94,7 @@ class VI_GMM:
                     new_epsilons = M * self.vgmm.covariances * M 
 
             elif md:
-                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs / self.dim)
+                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
 
             
             elif lin : 

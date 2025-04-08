@@ -6,7 +6,7 @@ from scipy.stats import special_ortho_group
 from einops import rearrange
 
 
-from src_bis.gmm import GMM
+from src.gmm import GMM
 
 import  math
 

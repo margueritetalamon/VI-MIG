@@ -1,8 +1,8 @@
-from src_bis.gmm import GMM
-from src_bis.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
-from src_bis.linreg import LinReg, LinReg_BNN
+from src.gmm import GMM
+from src.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
+from src.linreg import LinReg, LinReg_BNN
 
-from src_bis.funnel import Funnel
+from src.funnel import Funnel
 
 from matplotlib import  pyplot as plt
 import numpy as np 

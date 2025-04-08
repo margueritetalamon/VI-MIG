@@ -1,6 +1,6 @@
-from src_bis.prepare_dataset import prepare_dataset
-from src_bis.optim import VI_GMM
-from src_bis.target import Target
+from src.prepare_dataset import prepare_dataset
+from src.optim import VI_GMM
+from src.target import Target
 
 
 import json
@@ -48,7 +48,7 @@ def main(args):
 
 
     current_datetime = datetime.now().strftime("%Y-%m-%d_%H-%M")
-    folder_name = os.path.join("REBUTTAL" , exp_name, current_datetime)
+    folder_name = os.path.join(exp_name, current_datetime)
 
    
     dataset_train , dataset_test = prepare_dataset(args.dataset_name, args.train_ratio)
