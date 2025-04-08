@@ -92,7 +92,7 @@ class VI_GMM:
                 elif self.mode == "full":
                     M = np.eye(self.dim) - learning_rate* grad_covs
                     new_epsilons = M * self.vgmm.covariances * M 
-
+ 
             elif md:
                 new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
 

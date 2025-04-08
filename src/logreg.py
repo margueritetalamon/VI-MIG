@@ -4,7 +4,7 @@ import numpy.linalg as LA
 from scipy.stats import multivariate_normal 
 from scipy.stats import special_ortho_group
 from einops import rearrange
-
+ 
 
 from src.gmm import GMM
 

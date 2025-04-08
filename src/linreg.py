@@ -6,7 +6,7 @@ from scipy.stats import special_ortho_group
 from einops import rearrange
 
 
-
+ 
 class LinReg:
     def __init__(self, dataset=None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1, prior_mean = None, prior_eps = None ):
         

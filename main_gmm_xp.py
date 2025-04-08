@@ -46,7 +46,7 @@ def main(args):
     folder_name = os.path.join(exp_name, current_datetime)
 
    
-
+ 
     target_gmm_mode =  "iso" # "full", "diag"
     n_target = 10
     target_sample_boule = 4 * np.sqrt(d) 

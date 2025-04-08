@@ -99,7 +99,7 @@ class GMM:
         return weights
     
 
-    
+     
 
     def prob1(self, x):
         ### x needs to be B, 1, d

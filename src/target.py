@@ -7,7 +7,7 @@ from src.funnel import Funnel
 from matplotlib import  pyplot as plt
 import numpy as np 
 from  einops import rearrange 
-
+ 
 
 class Target:
     def __init__(self, name = "gmm",
