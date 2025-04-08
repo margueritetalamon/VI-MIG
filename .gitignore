@@ -8,3 +8,6 @@
 *.npy
 *.json
 
+__pycache__/
+*.py[cod]
+*.cpython-*
