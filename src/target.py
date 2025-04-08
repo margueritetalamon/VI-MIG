@@ -1,134 +1,97 @@
-import math 
-import torch
+from src_bis.gmm import GMM
+from src_bis.logreg import LogReg, LogReg_withBNN, MultiClassLogReg
+from src_bis.linreg import LinReg, LinReg_BNN
+
+from src_bis.funnel import Funnel
+
+from matplotlib import  pyplot as plt
+import numpy as np 
+from  einops import rearrange 
+
+
+class Target:
+    def __init__(self, name = "gmm",
+                mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
+                dataset = None, d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
+                n_classes = 3, ### multiclass logreg traget param 
+                hidden_units = 10): ### lin reg param 
+
+        
+        self.name = name 
+        if self.name == "gmm":
+            self.model = GMM(variational=False, mode = mode, weights = weights, means = means, covs=covariances, n_components = n_components, d = d, s = s, scale = scale)
+        
+
+        elif self.name == "logreg":
+            self.model = LogReg(dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean)
+
+        elif self.name == "funnel":
+            self.model = Funnel()
+
+
+        elif self.name == "bnn":
+            self.model = LogReg_withBNN(dataset = dataset, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean  )
+
+        elif self.name == "mlogreg":
+            self.model = MultiClassLogReg(dataset  = dataset, n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
+
+
+        elif self.name == "linreg":
+            self.model = LinReg(dataset  = dataset, prior_eps=prior_eps, prior_mean=prior_mean)
+
+        elif self.name == "linreg_bnn":
+            self.model = LinReg_BNN(dataset  = dataset, prior_eps=prior_eps, prior_mean=prior_mean, hidden_units = hidden_units)
 
 
 
-def target_gmm(N_target, d, s):
-    """ Define the target Gaussian mixture distribution. """
-    # torch.manual_seed(4)
-    # epsilon = torch.randn((N_target,))
-    epsilon =  torch.ones((N_target,))
-    epsilon *= math.sqrt(d)
+        self.dim = self.model.dim
 
-    print(epsilon)
-    # epsilon = torch.ones((N_target,)) * math.sqrt(d)
-    # sig = torch.eye(d) * (math.sqrt(d)*5)**2
-
-    # mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=sig)
-    # pi_mean = mvn_dist.sample((N_target,))
-
-    pi_mean = torch.empty(N_target, d).uniform_(-s, s)
-    # pi_mean = mvn_dist.sample((N_target,))
+        self.contours = None
 
     
-    # pi_mean = -10 + 20 * torch.rand((N_target,d))
-    # pi_mean = sample_uniform_hypersphere(N_target,d)*10
-    # pi_mean = torch.randint(-15,15, size = (N_target,d))
-
-    pi_cov = epsilon[..., None, None]**2 * torch.eye(d)[None]
-    print(pi_cov.shape)
-
-    # print(pi_cov.shape)
-    # print(pi_cov[0])
-    # print(pi_cov[-1])
-    # pi_cov = random_SDP(N_target, d) 
-    
-    return pi_mean, pi_cov
-
-def target_gmm_paperLin(N_target, d):
-    """ Define the target Gaussian mixture distribution. """
-
-    s = 4.3 * math.sqrt(d)
-
-    epsilon =  torch.ones((N_target,)) * math.sqrt(d)
-    pi_mean = torch.empty(N_target, d).uniform_(-s, s)
-    pi_cov = epsilon[..., None, None]**2 * torch.eye(d)[None]
-    
-    return pi_mean, pi_cov
+    def plot(self, bound = 20, grid_size = 100):
+        fig, ax = plt.subplots()
 
 
-
-def random_SDP(N,d, scale = 1):
-
-    A = torch.randn(N, d, d)
-    spd_matrices = torch.matmul(A.transpose(-1, -2), A)
-    spd_matrices *= scale
-
-    return spd_matrices
+        if self.dim == 2:
 
 
-def sample_uniform_hypersphere(N, d, radius=1.0):
+            if self.contours:
+                ax.contour(self.contours[0],self.contours[1], self.contours[2], levels=10, cmap="viridis")
 
-    directions = torch.randn(N, d)
-    directions /= torch.norm(directions, dim=1, keepdim=True)  # Normalize to unit length
-    radii = torch.rand(N).pow(1 / d) * radius  # Correct scaling of radius
+            else:
+                x = np.linspace(-bound, bound, grid_size)
+                y = np.linspace(-bound, bound, grid_size)
+                X, Y = np.meshgrid(x, y)
+                pos = np.dstack((X, Y))[:, :, None, :]
+                if self.name in ["funnel",  "logreg"]:
+                    pos = rearrange(pos[:,:, 0], "h w d -> (h w) d")
 
-    samples = directions * radii.unsqueeze(1)
-    return samples
+                Z = self.model.prob(pos)
 
+                if self.name in ["funnel",  "logreg", "mlogreg"]:
+                    Z = rearrange(Z, "(h w) -> h w", h  = grid_size)
 
+                    if self.name in ["logreg", "mlogreg"]:
+                        Z = Z/Z.sum()
+                
+                if self.name == "gmm":
+                    Z = Z[:,0,:]
+                print(Z.shape)
 
+                ax.contour(X, Y, Z, levels=20, cmap="viridis")
+                self.contours = (X,Y,Z)
 
-def target_gmm_4modes(N_target, d):
-    """ Define the target Gaussian mixture distribution. """
-    epsilon = torch.randn((N_target,))
-    epsilon =  torch.ones((N_target,))
-    print(epsilon)
-    # epsilon = torch.ones((N_target,)) * math.sqrt(d)
-    pt = 2.5
-    # pi_mean = -10 + 20 * torch.rand((N_target,d))
-    pi_mean = torch.tensor([[pt,pt], [-pt,pt], [-pt,-pt], [pt,-pt]])
-    print(pi_mean.shape)
-    # pi_mean = sample_uniform_hypersphere(N_target,d)*10
-    # pi_mean = torch.randint(-15,15, size = (N_target,d))
-    pi_cov = epsilon[..., None, None]**2 * torch.eye(d)[None]
-    print(pi_cov.shape)
+        elif self.dim == 1:
+            x = np.linspace(-bound, bound, grid_size)
+            y = self.model.prob(x[:,None, None])
+            
+            ax.plot(x, y)
 
-    # print(pi_cov.shape)
-    # print(pi_cov[0])
-    # print(pi_cov[-1])
-    # pi_cov = random_SDP(N_target, d) 
-    
-    return pi_mean, pi_cov
+        return ax
 
-
-def sanity_target_1():
-
-    pi_mean = torch.tensor([[5,3]])
-    pi_cov = torch.tensor([[10, 0], [0, 1]])
-    
-    return pi_mean, pi_cov
-
-def sanity_init_1():
-
-    mu_locs = torch.tensor([[-8,-2]])
-    epsilon = torch.tensor([[2, 0], [0, 2]])
-    
-    return mu_locs, epsilon
+        
 
 
-def sanity_target_2():
+            
 
-    pt = 3
-    pi_mean = torch.tensor([[pt,pt], [-pt,pt], [-pt,-pt], [pt,-pt]])
-    pi_cov =  torch.ones((4,))[..., None, None]* torch.eye(2)[None]*2
-    
-    return pi_mean, pi_cov
-
-
-def sanity_init_2():
-
-    mu_locs = torch.tensor([[-10,0], [5,3]])
-    epsilon = torch.ones((2,))
-    
-    return mu_locs, epsilon
-
-
-def initLin(N_mixture, d):
-
-    mvn_dist = torch.distributions.MultivariateNormal(torch.zeros(d), covariance_matrix=torch.eye(d)*10**2)
-    mu_init = mvn_dist.sample((N_mixture,))
-
-    epsilon_init = torch.ones(N_mixture) * 10
-
-    return mu_init, epsilon_init

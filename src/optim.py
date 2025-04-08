@@ -1,456 +1,211 @@
-import torch 
-import tqdm 
-import math
+from src_bis.gmm import GMM, IGMM, FGMM
+from src_bis.logreg import LogReg
 
-from src.utils import monte_carlo_kl_approximation, grad_V, gaussian_kernel, V_function
-from src.plot import plot_evolution_1d, plot_evolution_2d
-from src.hessian.utils import hessian_V, hessian_ln_mixture
-
-
-
-def gradient_descent_mu(mu_locs, epsilon, pi_mean, pi_cov, learning_rate=0.01, num_iterations=1000):
-    """
-    Perform gradient descent on KL(K * mu | pi) with respect to the locations of Dirac deltas in mu.
-    """
-
-    n, d = mu_locs.shape
-    mu_locs = mu_locs.clone()
-    kls = []
-    means = []
-
-    pi_dist = [torch.distributions.MultivariateNormal(mean, pi_cov) for mean in pi_mean]
-
-    y_01  = torch.randn(100, d)
-    print("critte")
-    
-    for iteration in tqdm.tqdm(range(num_iterations)):
+import numpy as np
+import tqdm
+from matplotlib import pyplot as plt
+import math 
+from scipy.stats import norm 
 
 
-        means.append(mu_locs.clone())
+class VI_GMM:
+    def __init__(self, target , mode = "iso", n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1, num_stab  = 0,  **kwargs):
         
-        grad_locs = torch.zeros_like(mu_locs)
+        self.target = target
 
-        for i, loc in enumerate(mu_locs):
-
-
-            # y_samples = y_01 * epsilon[i] + loc
-
-
-            y_samples = torch.distributions.MultivariateNormal(loc, torch.eye(d) * epsilon[i]**2).sample((100,)) # B, d
-
-            first_term = torch.mean(grad_V(y_samples, pi_mean, pi_cov), dim = 0)
-
-            numerator = torch.sum(
-                torch.stack([
-                    -gaussian_kernel(y_samples, loc_i, epsilon[i])[..., None] * (y_samples - loc_i) / (epsilon[i] ** 2)
-                    for loc_i in mu_locs
-                ]),
-                dim=0
-            )
-
-            denominator = torch.sum(
-                torch.stack([gaussian_kernel(y_samples, loc_i, epsi) for loc_i,epsi in zip(mu_locs, epsilon)]),
-                dim=0
-            ) 
-
-            denominator = torch.clamp(denominator, 1e-30)
-            second_term = torch.mean((numerator / denominator[..., None]), dim = 0 )
+        self.dim = self.target.model.dim
+        self.target_family = self.target.name
+        self.mode = mode
+        self.num_stab = num_stab
 
 
-            # Total gradient for location `i`
-            grad_locs[i] = first_term + second_term
+        if mode == "full":
+            self.vgmm = FGMM(d = self.dim, **kwargs)
 
-        # Update locations with gradient descent step
-        mu_locs = mu_locs - learning_rate * grad_locs
-        mu_locs = mu_locs.detach().clone()  
+        elif  mode == "iso":
+            self.vgmm = IGMM(d = self.dim, **kwargs)
 
-        if iteration % (num_iterations//2) == 0 or iteration == num_iterations-1:
-            kl_div = monte_carlo_kl_approximation(mu_locs, epsilon, pi_dist)
-            # print(kl_div)
-            kls.append(kl_div)
-            if d == 1: 
-                plot_evolution_1d(pi_dist, mu_locs, epsilon) 
-
-            if d == 2:
-                plot_evolution_2d(pi_mean, pi_cov, mu_locs, epsilon)
-            print(f"Iteration {iteration}, KL divergence: {kl_div}")
-
-
-    return mu_locs, kls, means
-
-
-
-
-def gradient_descent_mu_epsi(mu_locs, epsilon, pi_mean, pi_cov, learning_rate_mu=0.01, learning_rate_eps = 0.001, num_iterations=1000, B = 100):
-    """
-    Perform gradient descent on KL(K * mu | pi) with respect to the locations of Dirac deltas in x_i and epsilon_i
-    """
-    # Ensure that all variables are tensors
-
-    n , d = mu_locs.shape
-    mu_locs = mu_locs.clone() # n, d
-    epsilon = epsilon.clone() # n, d
-    kls = []
-    means = []
-    E = []
-
-
-    pi_dist = [torch.distributions.MultivariateNormal(mean, pi_cov) for mean in pi_mean]
-
-    # y_01  = torch.randn(B, d)
-    
-    for iteration in tqdm.tqdm(range(num_iterations)):
-
-        means.append(mu_locs.clone())
-
-        E.append(epsilon.clone())
-        
-        grad_locs = torch.zeros_like(mu_locs)
-        grad_eps = torch.zeros_like(epsilon)
-
-
-
-        # compute grad for each x_i and eps_i
-        for i in range(len(epsilon)):            
-
-            # y_samples = y_01 * epsilon[i] + mu_locs[i]
-            y_samples = torch.distributions.MultivariateNormal(mu_locs[i], torch.eye(d) * epsilon[i]**2).sample((100*d,)) # B, d
-
-            #### OPTIM OF MUS
-            first_term = torch.mean(grad_V(y_samples, pi_mean, pi_cov), dim = 0)
-
-            numerator = torch.stack([
-                                        - gaussian_kernel(y_samples, loc_i, epsi)[..., None] * (y_samples - loc_i) / (epsi ** 2)
-                                        for loc_i, epsi in zip(mu_locs, epsilon)
-                                    ]).sum(dim = 0)
-            
-            denominator = torch.stack([gaussian_kernel(y_samples, loc_i, epsi) for loc_i,epsi in zip(mu_locs, epsilon)]).sum(dim = 0) 
-            denominator = torch.clamp(denominator, 1e-40)
-        
-            second_term = torch.mean((numerator / denominator[..., None]), dim = 0 ) 
- 
-            grad_locs[i] = first_term + second_term
-
-
-            ### OPTIM EPSI
-            V = V_function(y_samples, pi_mean, pi_cov)
-            norm = ((y_samples - mu_locs[i])**2).sum(dim = -1) /(2*epsilon[i]**4)
-            cste = d*math.pi/(2*math.pi*epsilon[i]**2)
-
-            first_term = (V*(norm-cste)).mean()/n
-            # print("FT", first_term)
-
-            ln_term = (torch.stack([
-                                    gaussian_kernel(y_samples, loc_i, epsi) for loc_i,epsi in zip(mu_locs, epsilon)
-                                    ]).sum(dim = 0)/n).log() + 1
-            # print(ln_term.shape)
-
-            second_term = ((norm - cste)*ln_term).mean()/n
-            # print("ST", second_term)
-
-            ### grad epsi
-            grad_eps[i] = first_term+second_term
+        self.dim = self.vgmm.dim
         
 
+        self.vgmm.num_stab = self.num_stab
+        self.target.model.num_stab = self.num_stab
 
-        # Update locations with gradient descent step
-        mu_locs = mu_locs - learning_rate_mu * grad_locs
-        mu_locs = mu_locs.detach().clone()
+        self.n_iterations = n_iterations
+        self.learning_rate = learning_rate
+        self.kls = []
+        self.BKL = BKL
+        self.BG = BG
+        self.GM = []
+        self.GE = []
 
-        # print(grad_eps)
-        
-        # Update epsilons with gradient descent step
-        ### epsilon is the "ecart type", however we perform GD on the variance, thus we need to substract from the "variance"
-        epsilon = (epsilon**2) * torch.exp(-learning_rate_eps * grad_eps )
-        epsilon = epsilon.sqrt()
-
-        print(epsilon)
-  
-        
-        # if iteration % (num_iterations//2) == 0 or iteration == num_iterations-1:
-            # kl_div = monte_carlo_kl_approximation(mu_locs, epsilon, pi_dist, B = 100)
-            # kls.append(kl_div)
-           
-            # if d == 1: 
-            #     plot_evolution_1d(pi_dist, mu_locs, epsilon) 
-
-            # if d == 2:
-            #     plot_evolution_2d(pi_mean, pi_cov, mu_locs, epsilon)
-            # print(f"Iteration {iteration}, KL divergence: {kl_div}")
-
-
-    return mu_locs, kls, means, epsilon, E
-
-
-
-
-
-
-def gradient_descent_mu_epsi_new_update(mu_locs, epsilon, pi_mean, pi_cov, learning_rate_mu=0.01, learning_rate_eps = 0.001, num_iterations=1000):
-    """
-    Perform gradient descent on KL(K * mu | pi) with respect to the locations of Dirac deltas in x_i and epsilon_i
-    """
-    # Ensure that all variables are tensors
-
-    n , d = mu_locs.shape
-    mu_locs = mu_locs.clone() # n, d
-    epsilon = epsilon.clone() # n, 1
-    kls = []
-    means = []
-    E = []
-
-
-    pi_dist = [torch.distributions.MultivariateNormal(mean, pi_cov) for mean in pi_mean]
+        self.drop_rate = 0.8
+        self.epochs_drop = 1000
 
     
-    for iteration in tqdm.tqdm(range(num_iterations)):
-
-        means.append(mu_locs.clone())
-
-        E.append(epsilon.clone())
+    def lr_step_based_decay(self, epoch, initial_lr =  1):
         
-        grad_locs = torch.zeros_like(mu_locs)
-        grad_epsilons = torch.zeros_like(epsilon)
 
-        # compute grad for each x_i and eps_i
-        for i in range(len(epsilon)):            
+        decay_factor = math.pow(self.drop_rate, math.floor(epoch / self.epochs_drop))
+        new_learning_rate = initial_lr * decay_factor
 
-            y_samples = torch.distributions.MultivariateNormal(mu_locs[i], torch.eye(d) * epsilon[i]**2).sample((100,)) # B, d
-
-            #### OPTIM OF MUS
-            first_term = torch.mean(grad_V(y_samples, pi_mean, pi_cov), dim = 0)
-
-            numerator = torch.stack([
-                                        - gaussian_kernel(y_samples, loc_i, epsi)[..., None] * (y_samples - loc_i) / (epsi ** 2)
-                                        for loc_i, epsi in zip(mu_locs, epsilon)
-                                    ]).sum(dim = 0)
-            
-            denominator = torch.stack([gaussian_kernel(y_samples, loc_i, epsi) for loc_i,epsi in zip(mu_locs, epsilon)]).sum(dim = 0) 
-            denominator = torch.clamp(denominator, 1e-40)
-        
-            second_term = torch.mean((numerator / denominator[..., None]), dim = 0 ) 
- 
-            grad_locs[i] = first_term + second_term
+        return new_learning_rate
+    
+    def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False, compute_kl = 1000):
 
 
-            ### OPTIM EPSI
-            first_term = hessian_ln_mixture(y_samples, mu_locs, epsilon)
+        initial_lr =  self.learning_rate
+        learning_rate = initial_lr
 
-            second_term = (y_samples - mu_locs[0])[:,:, None] @ grad_V(y_samples, pi_mean, pi_cov)[:,None, :] / (epsilon[i]**2)
+        if not gen_noise :
+            noise_grads = np.random.randn(self.BG, self.dim) 
+        else:
+            noise_grads = None
 
-            # grad_epsilons[i] = (first_term + second_term).mean(dim = 0).diag().sum() / (2*n*d)
-            grad_epsilons[i] = (first_term + second_term).mean(dim = 0).diag().sum() / (n*d)
+        noise_KL = np.random.randn(self.BKL, self.dim) 
+        component_indices = np.random.choice(self.vgmm.n_components, size=self.BKL, p=self.vgmm.weights)
+
+
+        for _ in tqdm.tqdm(range(self.n_iterations)):
 
             
-        
+            grad_means, grad_covs = self.vgmm.compute_grads(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
+
+            
+            if save_grads :
+                self.GM.append(grad_means)
+                self.GE.append(grad_covs)
+
+            if scheduler:
+
+                learning_rate = self.lr_step_based_decay(_, initial_lr)
+                # print(learning_rate)
+
+            new_means = self.vgmm.means - learning_rate * grad_means
+
+            
+            if bw: 
+                if self.mode == "iso":
+                    new_epsilons = (1 - (2/self.dim) * learning_rate * grad_covs)**2 * self.vgmm.epsilons 
+                
+
+                elif self.mode == "full":
+                    M = np.eye(self.dim) - learning_rate* grad_covs
+                    new_epsilons = M * self.vgmm.covariances * M 
+
+            elif md:
+                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs / self.dim)
+
+            
+            elif lin : 
+                new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * learning_rate * grad_means
+
+                inv_new_epsilons = (1/self.vgmm.epsilons) + (2 * learning_rate * grad_covs / self.dim)
+                new_epsilons = (inv_new_epsilons)**(-1)
+
+                    
+            elif means_only:
+                new_epsilons = None
+
+            else:
+                raise ValueError("No optim performed.")
 
 
-        # Update locations with gradient descent step
-        mu_locs = mu_locs - learning_rate_mu * grad_locs
-        mu_locs = mu_locs.detach().clone()
 
-        # print(grad_eps)
-        
-        # Update epsilons with gradient descent step
-        ### epsilon is the "ecart type", however we perform GD on the variance, thus we need to perform the update on the "variance"
-        # print( "HESSIAN V", hess_V)
-        # print( "HESSIAN P", hess_P)
-        epsilon = (1 -  learning_rate_eps * grad_epsilons)**2 * epsilon**2 ### maybe add d
-        epsilon = epsilon.sqrt()
-  
-        
-        if iteration % (num_iterations//10) == 0 or iteration == num_iterations-1:
-            kl_div = monte_carlo_kl_approximation(mu_locs, epsilon, pi_dist, B = 100)
-            kls.append(kl_div)
-           
-            if d == 1: 
-                plot_evolution_1d(pi_dist, mu_locs, epsilon) 
+            self.vgmm.update(new_means, new_epsilons)
 
-            if d == 2:
-                plot_evolution_2d(pi_mean, pi_cov, mu_locs, epsilon)
-            print(f"Iteration {iteration}, KL divergence: {kl_div}")
-            print("Epsilon values", epsilon)
+            # self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
+            if _ % compute_kl == 0:
+                self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
+            if _ % plot_iter == 0:
 
-    return mu_locs, kls, means, epsilon, E
+                print("LR" , learning_rate)
+                print("KL ",self.kls[-1])
 
 
 
 
 
-from einops import rearrange, repeat
-
-
-
-def gaussian_kernel_HD(Y_flat, mu_locs, epsilon):
-    ### apply gaussian kernel Ze * exp to each y of of Y flat for each pair mu_locs, epsilon (there are n pairs)
-    n, d = mu_locs.shape
-    return ((-((Y_flat[:, None]- mu_locs[None])**2).sum(dim = -1)/(2*epsilon[None]**2)).exp()/ ((2*math.pi*epsilon[None]**2)**(d/2)))  # b, 1, d - 1,n,d = b, n, d -> b,n 
-
-
-def optim_mu_epsi_HD(mu_locs, epsilon, pi_mean, pi_cov, learning_rate_mu=0.01, learning_rate_eps = 0.001, num_iterations=1000, B = 100):
     
-    clippin = 10e-40
+    def plot_target_and_circles(self,jump = 1000, bound = 20, grid_size = 100):
 
-    n, d = mu_locs.shape
-    y_01  = torch.randn(n, B, d)
-    E , M = [], []
+        ax = self.target.plot(bound = bound, grid_size=grid_size)
+        self.vgmm.plot_evolution(0, ax, jump, bound=bound)
 
-    for i in tqdm.tqdm(range(num_iterations)):
-        mixture_epsilon = repeat(epsilon, "n -> n b", b = B ) # n b 
-        mixture_means = repeat(mu_locs, "n d -> n b d", b= B) # n b d
-        Y = ((y_01 * mixture_epsilon[..., None]) + mixture_means) # n, B , d
-        Y_flat = rearrange(Y, "n b d -> (n b) d")
-
-        ### OPTIM MU
-        GV = grad_V(Y_flat,  pi_mean, pi_cov)
-        first_term = rearrange(GV, "(n b) d -> n b d", n  = n).mean(dim = -2)
-
-
-        y_mu_div_eps = ((Y_flat[:, None]- mu_locs[None])/epsilon[None,:, None]**2) # b, n ,d (b is n * b ) 
-        num = (y_mu_div_eps  * gaussian_kernel_HD(Y_flat, mu_locs,epsilon)[..., None]).sum(dim  = -2)
-        den =  gaussian_kernel_HD(Y_flat, mu_locs,epsilon).sum(dim = -1)
-
-        num1 = num + clippin
-        den1 = den + clippin
-
-        second_term = rearrange(num1/den1[:,None], "(n b) d -> n b d", n = n ).mean(dim = -2)
-
-
-        grad_locs = (first_term - second_term) # n, d 
-
-        # print("optim mu")
-
-        ### Optim eps
-        yi_mi_div_ei = rearrange(((Y - mixture_means)/epsilon[..., None,None]**2), "n b d -> (n b) d")
-        num1 = (yi_mi_div_ei*num).sum(dim = -1) + clippin ### scalar product Tr(uvT)= uTv
-        den1 = den + clippin 
-
-        first_term = rearrange(num1/den1, "(n b) -> n b", n = n).mean(dim  = -1)
-        second_term = rearrange((yi_mi_div_ei*GV).sum(dim = -1), "(n b) -> n b", n = n).mean(dim  = -1)
-        grad_eps  = (second_term - first_term)/(2*n)
-
-        mu_locs = mu_locs - learning_rate_mu * grad_locs
-        mu_locs = mu_locs.detach().clone()
-
-        # print(grad_eps)
-
-        # Update epsilons with gradient descent step
-        ### epsilon is the "ecart type", however we perform GD on the variance, thus we need to substract from the "variance"
-        epsilon = (epsilon**2) * torch.exp(-learning_rate_eps * grad_eps )
-        epsilon = epsilon.sqrt()
-
-        E.append(epsilon)
-        M.append(mu_locs)
-
-    return mu_locs, epsilon , M, E
-
-
-
-
-def optim_mu_only_HD(mu_locs, epsilon, pi_mean, pi_cov, learning_rate_mu=0.01, learning_rate_eps = 0.001, num_iterations=1000, B = 100):
     
-    clippin = 10e-40
 
-    n, d = mu_locs.shape
-    y_01  = torch.randn(n, B, d)
-    M = []
+    def save(self, folder):
+               
+        np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
+        np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
+        if self.mode == "full":
+            np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
 
-    for i in tqdm.tqdm(range(num_iterations)):
-        mixture_epsilon = repeat(epsilon, "n -> n b", b = B ) # n b 
-        mixture_means = repeat(mu_locs, "n d -> n b d", b= B) # n b d
-        Y = ((y_01 * mixture_epsilon[..., None]) + mixture_means) # n, B , d
-        Y_flat = rearrange(Y, "n b d -> (n b) d")
-
-        ### OPTIM MU
-        GV = grad_V(Y_flat,  pi_mean, pi_cov)
-        first_term = rearrange(GV, "(n b) d -> n b d", n  = n).mean(dim = -2)
-
-
-        y_mu_div_eps = ((Y_flat[:, None]- mu_locs[None])/epsilon[None,:, None]**2) # b, n ,d (b is n * b ) 
-        num = (y_mu_div_eps  * gaussian_kernel_HD(Y_flat, mu_locs,epsilon)[..., None]).sum(dim  = -2)
-        den =  gaussian_kernel_HD(Y_flat, mu_locs,epsilon).sum(dim = -1)
-
-        num1 = num + clippin
-        den1 = den + clippin
-
-        second_term = rearrange(num1/den1[:,None], "(n b) d -> n b d", n = n ).mean(dim = -2)
-
-
-        grad_locs = (first_term - second_term) # n, d 
-
-
-        mu_locs = mu_locs - learning_rate_mu * grad_locs
-        mu_locs = mu_locs.detach().clone()
-
-        # print(grad_eps)
-
-        # Update epsilons with gradient descent step
-        ### epsilon is the "ecart type", however we perform GD on the variance, thus we need to substract from the "variance"
-
-        M.append(mu_locs)
-
-    return mu_locs , M
-
-
+        np.save(f"{folder}/kls.npy", self.kls)
 
         
 
 
+   
 
-def optim_mu_epsi_HD_ML(mu_locs, epsilon, pi_mean, pi_cov, learning_rate_mu=0.01, learning_rate_eps = 0.001, num_iterations=1000, B = 100):
-    
-    clippin = 10e-40
+    def plot_estimated(self,  axes = None):
+        
 
-    n, d = mu_locs.shape
-    y_01  = torch.randn(n, B, d)
-    E , M = [], []
+        if self.dim == 2:
+            return 
+        
 
-    for i in tqdm.tqdm(range(num_iterations)):
-        mixture_epsilon = repeat(epsilon, "n -> n b", b = B ) # n b 
-        mixture_means = repeat(mu_locs, "n d -> n b d", b= B) # n b d
-        Y = ((y_01 * mixture_epsilon[..., None]) + mixture_means) # n, B , d
-        Y_flat = rearrange(Y, "n b d -> (n b) d")
+        elif self.dim>2:
 
-        ### OPTIM MU
-        GV = grad_V(Y_flat,  pi_mean, pi_cov)
-        first_term = rearrange(GV, "(n b) d -> n b d", n  = n).mean(dim = -2)
+            if axes is None:
 
+                bound = 60
+                grid_size = 100
+                x_grid = np.linspace(-bound, bound, grid_size)
 
-        y_mu_div_eps = ((Y_flat[:, None]- mu_locs[None])/epsilon[None,:, None]**2) # b, n ,d (b is n * b ) 
-        num = (y_mu_div_eps  * gaussian_kernel_HD(Y_flat, mu_locs,epsilon)[..., None]).sum(dim  = -2)
-        den =  gaussian_kernel_HD(Y_flat, mu_locs,epsilon).sum(dim = -1)
+                grid_rows = 3
+                grid_cols = 4
 
-        num1 = num + clippin
-        den1 = den + clippin
+                fig, axes = plt.subplots(4, self.dim//4, figsize=(5 * grid_cols, 4 * grid_rows))
+                axes = axes.flatten()  # Flatten for easy indexing
 
-        second_term = rearrange(num1/den1[:,None], "(n b) d -> n b d", n = n ).mean(dim = -2)
+                mu_final = self.vgmm.optimized_means[0]
+                epsilon_final = self.vgmm.optimized_epsilons[0]
+                pi_mean = self.target.model.means
+                pi_cov = self.target.model.covariances
 
 
-        grad_locs = (first_term - second_term) # n, d 
 
-        # print("optim mu")
+            for j in range(self.dim):
+                estimated_marginals = [
+                    norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
+                    for mu, epsilon in zip(mu_final, epsilon_final)
+                ]
+                Z_estimated = np.sum(estimated_marginals, axis=0) / len(estimated_marginals)
 
-        ### Optim eps
-        yi_mi_div_ei = rearrange(((Y - mixture_means)/epsilon[..., None,None]**2), "n b d -> (n b) d")
-        num1 = (yi_mi_div_ei*num).sum(dim = -1) + clippin ### scalar product Tr(uvT)= uTv
-        den1 = den + clippin 
+                target_marginals = [
+                    norm.pdf(x_grid, loc=pim[j], scale=np.sqrt(pic[j, j]))
+                    for pim, pic in zip(pi_mean, pi_cov)
+                ]
+                Z_target = np.sum(target_marginals, axis=0) / len(target_marginals)
 
-        first_term = rearrange(num1/den1, "(n b) -> n b", n = n).mean(dim  = -1)
-        second_term = rearrange((yi_mi_div_ei*GV).sum(dim = -1), "(n b) -> n b", n = n).mean(dim  = -1)
-        grad_eps  = (second_term - first_term)/(2*n)
+                axes[j].plot(x_grid, Z_estimated, label="MD", color="red", linewidth=3)
+                axes[j].plot(x_grid, Z_target, label="target", color="blue", linestyle="--", linewidth=3)
+                # axes[j].set_title(f"dim {j}", fontweight='bold')
+                axes[j].set_xticks([-50,0, 50])
+                axes[j].set_yticks([])
 
-        mu_locs = mu_locs - learning_rate_mu * grad_locs
-        mu_locs = mu_locs.detach().clone()
+                
+            plt.legend()
 
-        # print(grad_eps)
 
-        # Update epsilons with gradient descent step
-        ### epsilon is the "ecart type", however we perform GD on the variance, thus we need to substract from the "variance"
-        epsilon = (1 - learning_rate_eps*grad_eps/d)**2 * epsilon**2
-        epsilon = epsilon.sqrt()
+                            
 
-        E.append(epsilon)
-        M.append(mu_locs)
 
-    return mu_locs, epsilon , M, E
+                                    
+
+
+                            
+
+
