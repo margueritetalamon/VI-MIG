@@ -8,7 +8,7 @@ from matplotlib.patches import Ellipse
 
 
 
-class GMM:
+class GMM: 
     def __init__(self, variational = True, mode ="full", weights = None, means = None, covs = None, n_components = 3, d = 2, s = 10, scale = 2):
 
         self.variational = variational
