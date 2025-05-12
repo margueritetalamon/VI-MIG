@@ -60,7 +60,9 @@ def prepare_dataset(name, train_ratio = 0.6):
 
     N, d = X.shape
 
-    indices = np.random.permutation(N)
+    indices = np.random.RandomState(seed=42).permutation(N)
+
+    # indices = np.random.permutation(N)
     X = X[indices]
     y = y[indices]
     

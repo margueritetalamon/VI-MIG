@@ -1,4 +1,4 @@
-from src.gmm import GMM, IGMM, FGMM
+from src.gmm import GMM, IGMM, FGMM, STGMM
 from src.logreg import LogReg
 
 import numpy as np
@@ -6,6 +6,10 @@ import tqdm
 from matplotlib import pyplot as plt
 import math 
 from scipy.stats import norm 
+import time
+import torch 
+import torch.distributions as dist
+
 
 
 class VI_GMM:
@@ -24,6 +28,10 @@ class VI_GMM:
 
         elif  mode == "iso":
             self.vgmm = IGMM(d = self.dim, **kwargs)
+
+
+        elif mode == "stan":
+            self.vgmm = STGMM(**kwargs)
 
         self.dim = self.vgmm.dim
         
@@ -51,6 +59,25 @@ class VI_GMM:
 
         return new_learning_rate
     
+    def lr_sqrt(self, epoch):
+        new_learning_rate = 1 - np.sqrt( epoch / self.n_iterations)
+        return new_learning_rate
+
+    def lr_ln(self, epoch):
+        new_learning_rate = 1 -  np.log(epoch+1)/np.log(self.n_iterations) 
+
+        return new_learning_rate
+
+    def lr_sqrt_ln(self, epoch):
+        new_learning_rate = 1 - np.sqrt( np.log(epoch+1)/np.log(self.n_iterations) )
+
+        return new_learning_rate
+    
+    def lr_linear(self, epoch):
+        new_learning_rate = self.learning_rate /(epoch +1)
+
+        return new_learning_rate
+    
     def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False, compute_kl = 1000):
 
 
@@ -66,7 +93,8 @@ class VI_GMM:
         component_indices = np.random.choice(self.vgmm.n_components, size=self.BKL, p=self.vgmm.weights)
 
 
-        for _ in tqdm.tqdm(range(self.n_iterations)):
+        start = time.time()
+        for _ in tqdm.tqdm(range(self.n_iterations), leave = False):
 
             
             grad_means, grad_covs = self.vgmm.compute_grads(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
@@ -78,29 +106,32 @@ class VI_GMM:
 
             if scheduler:
 
-                learning_rate = self.lr_step_based_decay(_, initial_lr)
+                learning_rate = self.lr_linear(_)
                 # print(learning_rate)
 
-            new_means = self.vgmm.means - learning_rate * grad_means
+            new_means = self.vgmm.means - learning_rate * self.vgmm.n_components * grad_means
 
             
             if bw: 
                 if self.mode == "iso":
-                    new_epsilons = (1 - (2/self.dim) * learning_rate * grad_covs)**2 * self.vgmm.epsilons 
+                    new_epsilons = (1 - (2*self.vgmm.n_components*learning_rate/self.dim)  * grad_covs)**2 * self.vgmm.epsilons 
                 
 
                 elif self.mode == "full":
-                    M = np.eye(self.dim) - learning_rate* grad_covs
+
+                    M = np.eye(self.dim) - 2*self.vgmm.n_components*learning_rate*grad_covs
                     new_epsilons = M * self.vgmm.covariances * M 
  
             elif md:
-                new_epsilons = self.vgmm.epsilons * np.exp(-learning_rate * grad_covs)
+
+                new_epsilons = self.vgmm.epsilons * np.exp(-(2*self.vgmm.n_components*learning_rate/self.dim) * grad_covs )
 
             
-            elif lin : 
-                new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * learning_rate * grad_means
 
-                inv_new_epsilons = (1/self.vgmm.epsilons) + (2 * learning_rate * grad_covs / self.dim)
+            elif lin : 
+                new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * self.vgmm.n_components * learning_rate * grad_means
+
+                inv_new_epsilons = (1/self.vgmm.epsilons) + (2 *  self.vgmm.n_components * learning_rate * grad_covs / self.dim)
                 new_epsilons = (inv_new_epsilons)**(-1)
 
                     
@@ -123,6 +154,7 @@ class VI_GMM:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
 
+        self.time = time.time() - start
 
 
 
@@ -143,6 +175,7 @@ class VI_GMM:
             np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
 
         np.save(f"{folder}/kls.npy", self.kls)
+        np.save(f"{folder}/time.npy", self.time)
 
         
 
@@ -198,6 +231,48 @@ class VI_GMM:
 
                 
             plt.legend()
+
+    
+    def evaluate(self, folder_xp, B = 1000, noise = None, component_indices = None):
+
+        if noise is None:
+            noise = np.random.randn(B, self.dim) 
+        
+        if component_indices is None:
+            component_indices = np.random.choice(self.vgmm.n_components, size=B, p=self.vgmm.weights)
+
+        lll , acc  = [], []
+        if self.target.name in ["logreg", "mlogreg"]:
+            for split in ["train", "test"]:
+                acc = self.target.model.evaluate_accuracy(self.vgmm,noise = noise, component_indices=component_indices, jump = 5, split = split )
+                np.save(f"{folder_xp}/accuracy_{split}.npy", acc)
+       
+                lll = self.target.model.evaluate_lll(self.vgmm,noise = noise, component_indices=component_indices, jump = 5, split = split ).mean(axis = 1 )
+                np.save(f"{folder_xp}/lll_{split}.npy", lll)
+
+
+        elif self.target.name == "linreg":
+            raise
+
+
+    def recompute_KLS(self, jump = 1, B = 1000):
+        kls = []
+
+        noise = np.random.randn(B, self.dim) 
+        component_indices = np.random.choice(self.vgmm.n_components, size=B, p=self.vgmm.weights)
+
+        for t in tqdm.tqdm(range(0, self.n_iterations, jump)):
+            samples = self.vgmm.sample(B, noise, component_indices, t = t)
+            covariances = self.vgmm.optimized_epsilons[t][:,None,None] * np.eye(self.vgmm.dim)
+            gaussians = dist.MultivariateNormal(torch.as_tensor(self.vgmm.optimized_means[t]), covariance_matrix=torch.as_tensor(covariances)) 
+            prob = gaussians.log_prob(torch.as_tensor(samples[:,None])).exp().numpy()
+            l_prob = np.log((self.vgmm.weights[None] * prob).sum(axis = -1))
+            
+            kls.append((l_prob - self.target.model.log_prob(samples)).mean())
+        
+        self.kls = kls
+
+        
 
 
                             

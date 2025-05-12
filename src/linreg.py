@@ -1,9 +1,11 @@
 import numpy as np
 from sklearn.preprocessing import StandardScaler
 import numpy.linalg as LA 
-from scipy.stats import multivariate_normal 
+from scipy.stats import multivariate_normal , gamma
 from scipy.stats import special_ortho_group
 from einops import rearrange
+
+# from src.neural_network import MultiLayerNeuralNetwork
 
 
  
@@ -149,23 +151,41 @@ class SmallNeuralNetwork:
 
 
 class LinReg_BNN:
-    def __init__(self, dataset=None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1, prior_mean = None, prior_eps = None , hidden_units =  50):
+    def __init__(self, dataset_train=None, dataset_test = None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1, prior_mean = None, prior_eps = None , hidden_units =  50, sigma = 1, n_layers = 1):
         
         self.scaler = StandardScaler()
         self.Z = Z
         self.fixed_theta = None
        
-        self.load_data(dataset)
+        self.load_data(dataset_train)
 
-        self.neural_network = SmallNeuralNetwork(hidden_units=hidden_units, data_dim = self.dim )
-        self.dim = self.neural_network.param_dim
+        self.X_test = self.scaler.transform(dataset_test[0])
+        self.y_test = dataset_test[1]
+        self.data_dim  = self.X.shape[-1]
+        
 
-        self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.dim)
+        # self.neural_network = SmallNeuralNetwork(hidden_units=hidden_units, data_dim = self.dim )
+        self.neural_network = SmallNeuralNetwork(data_dim = self.data_dim , hidden_units=hidden_units)
+        self.bnn_dim = self.neural_network.param_dim
+        # self.dim = self.bnn_dim + 1
+        self.dim = self.bnn_dim
+
+
+        #### PRIOR ON PARAMETERS OF THE BNN
+        self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.bnn_dim)
         self.prior_eps  = prior_eps if prior_eps is not None else 1
+        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.bnn_dim))
 
-        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
+
+        # ##### PRIOR ON SIGMA the scale of the additive noise in the linear regression. 
+        # self.alpha_sigma = alpha
+        # self.lambda_sigma = slambda
+        # self.prior_sigma = gamma(self.alpha_sigma, self.lambda_sigma)
+        self.sigma = sigma
 
         print(self.dim)
+
+     
 
     
 
@@ -192,25 +212,81 @@ class LinReg_BNN:
     
 
     def log_likelihood(self, theta): ###  log likelihood for the parameter theta theta of  shape B, d
-        logits = self.neural_network.forward(theta, self.X) # B, n , 
 
-        lll = (-((self.y - logits)**2)/(2*self.prior_eps) - np.log(2*np.pi * self.prior_eps)/2).sum(axis = -1)
+        # w , sigma = self.unpack(theta)
+
+        # logits = self.neural_network.forward(w, self.X) # B, n , 
+        # print("samles", theta.shape)
+        logits  = self.neural_network.forward(theta, self.X)
+        # print("logits", logits.shape)
+
+        # lll = (-((self.y - logits)**2)/(2*sigma[:, None]**2) - np.log(2*np.pi * sigma[:, None]**2)/2).sum(axis = -1)
+        lll = (-((self.y - logits)**2)/(2*self.sigma) - np.log(2*np.pi*self.sigma)/2).sum(axis = -1)
 
         return lll
     
+    def unpack(self, theta):
+        """
+        theta: array of shape (B, dim)
+        returns: parameters of the NN (w), sigma
+        """
+        w = theta[:, :self.bnn_dim]
+        sigma = theta[:, -1]
+        
+        # unpack the W,v,b from w as you had before
+        # W, v, b = self.neural_network.unpack_params(w)
+        return w, sigma
+
     
     def gradient_log_likelihood(self, theta): 
         ### theta can be a sample so of shape B, d
         X,y  = self.batchized_data()
+        n = X.shape[0]
 
+        # w, sigma = self.unpack(theta)
+
+        # logits = self.neural_network.forward(w, X) # B, n_samples
+        # resid = (y - logits)
+        # gradients_bnn_w = self.neural_network.compute_gradients(w, X) # B, n , dim_params
+        # gradient_sigma = (resid**2 ).sum(axis = -1) / (sigma**3) - n/sigma 
+
+        # gradient_w = (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
+
+
+        # gradients = np.concatenate([gradient_w, gradient_sigma[:,None]], axis=1)
+        # print("samles", theta.shape)
+    
         logits = self.neural_network.forward(theta, X) # B, n_samples
-        gradients = self.neural_network.compute_gradients(theta, X) # B, n , dim_params
+        # print("LOGITS",logits.shape)
+        resid = (y - logits)
+        # print("resid", resid.shape)
+        gradients_bnn_w = self.neural_network.compute_gradients(theta, X) #  B, n , dim_params
+        # print("grad BNN", gradients_bnn_w.shape)
+
+        # gradients= (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
+        gradients= (resid[..., None]*gradients_bnn_w/self.sigma).sum(axis = 1)
+        # print("grad LL", gradients.shape)
+
+
+
+
         
-        return ((y - logits)[..., None]*gradients/self.prior_eps).sum(axis = 1) ### shape  B, dim_params
+        return gradients ### shape  B, dim_params
     
     def grad_log_prior(self, theta):
         ### theta of shape B,d 
-        return - (theta - self.prior_mean)/self.prior_eps
+        # w, sigma = self.unpack(theta)
+        # grad_w = - (w - self.prior_mean)/self.prior_eps
+        # grad_sigma  = (self.alpha_sigma-1)/sigma - self.lambda_sigma
+
+        # gradients = np.concatenate([grad_w, grad_sigma[:,None]], axis=1)
+
+        gradients = - (theta - self.prior_mean)/self.prior_eps
+        # print("grad prior", gradients.shape)
+
+
+
+        return gradients
     
         
     def gradient_log_density(self, theta): 
@@ -226,7 +302,9 @@ class LinReg_BNN:
 
     def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
         
-        return self.log_likelihood(theta) + self.prior.logpdf(theta)
+        # w, sigma = self.unpack(theta)
+        # return self.log_likelihood(theta) + self.prior.logpdf(w) + self.prior_sigma.logpdf(sigma)
+        return self.log_likelihood(theta) + self.prior.logpdf(theta) 
 
 
 

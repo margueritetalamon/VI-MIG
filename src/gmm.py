@@ -5,7 +5,7 @@ from einops import rearrange
 from matplotlib import pyplot as plt
 from scipy.stats import norm 
 from matplotlib.patches import Ellipse
-
+import math 
 
 
 class GMM: 
@@ -178,11 +178,11 @@ class GMM:
         invcov_by_centered = np.einsum("ndd,bnd->bnd", self.invcov, (x[:,None] - self.means[None])) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
         log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None].numpy()# B, Ntarget
         # mean_logprob = log_prob.mean(axis = 0)
-        mean_logprob = 0
+        # mean_logprob = 0
 
-        # log_prob_c = np.clip(log_prob - mean_logprob, -700, 700).numpy()
-        log_prob_c = log_prob - mean_logprob
+        log_prob_c = np.clip(log_prob , -700, 700, dtype = np.float64)
         prob_c = np.exp(log_prob_c)
+
         numerator = - (self.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1)
         denominator = (self.weights[None,:,None]*prob_c).sum(axis = 1)
 
@@ -203,36 +203,65 @@ class GMM:
         samples = self.sample(B = B, noise = noise)
         return self.log_prob(samples[:,None]).mean()
 
-    def compute_KL(self, vgmm, noise = None, component_indices = None ,  B = 1000):
+    def compute_KL(self, vgmm, noise = None, component_indices = None ,  B = 1000 ):
         
+        # if vgmm.mode == "stan":
+        #     KLS = []
+        #     for mode in ["mean", "left", "right"]:
+
+        #         samples = vgmm.sample(B, noise, component_indices, mode = mode)
+        #         KLS.append((vgmm.log_prob(samples[:,None] , mode = mode) - self.log_prob(samples[:,None])).mean())
+
+        #     return KLS
+
         samples = vgmm.sample(B, noise, component_indices)
    
         # return np.log(vgmm.prob(samples[:,None]) / self.prob(samples[:,None])).mean()
         return (vgmm.log_prob(samples[:,None] + self.num_stab) - self.log_prob(samples[:,None] + self.num_stab)).mean()
     
-    def compute_marginals(self, target, axes = None, t = None,  bounds = (-20,20), grid_size =  100):
-        ####### TODO 
-
-        x_grid = np.linspace(-bounds[0], bounds[1], grid_size)
-        mus = self.optimized_means[t] if t else self.means
-        epsilons = self.optimized_covs[t] if t else self.epsilons 
-
-        for j  in range(self.dim):
-
-            estimated_marginals = [
-                    norm.pdf(x_grid, loc=mu[j], scale=np.sqrt(epsilon))  # 1D Gaussian PDF
-                    for mu, epsilon in zip(mus, epsilons)]
-            
-            Z_estimated = np.sum(estimated_marginals, axis=0) / len(estimated_marginals)
-            axes[j].plot(x_grid, Z_estimated, label="estimated", color="red", linewidth=3)
 
 
+    
+    def compute_marginals(self,fig = None,  axes = None, t = -1,  bounds = (-20,20), grid_size =  100, ncols = 10, label = None, color = "black"):
+        x_grid = np.linspace(bounds[0], bounds[1], grid_size)
+
+        nrows = math.ceil(self.dim / ncols)
+
+        if self.variational:
+            means = self.optimized_means[t]
+            covs = self.optimized_epsilons[t][:, None, None] * np.eye(self.dim)[None]
+        else:
+            means = self.means
+            covs = self.covariances
+
+        if axes is None:
+
+            fig, axes = plt.subplots(
+                nrows=nrows,
+                ncols=ncols,
+                figsize=(2.5 * ncols, 2.0 * nrows),
+                sharex=True,
+                sharey=False,
+                constrained_layout=True
+            )
+            axes = axes.flatten()
+
+        for j in range(self.dim):
+
+        
             target_marginals = [
                 norm.pdf(x_grid, loc=pim[j], scale=np.sqrt(pic[j, j]))
-                for pim, pic in zip(target.model.means, target.model.covariances)
+                for pim, pic in zip(means, covs)
             ]
+            Z_target = (np.array(target_marginals) * self.weights[..., None]).sum(axis = 0)
 
-            Z_target = np.sum(target_marginals, axis=0) / len(target_marginals)
+            axes[j].plot(x_grid, Z_target, label=label, color=color, linestyle="--", linewidth=3)
+            axes[j].set_yticks([])
+
+        handles, plot_labels = axes[0].get_legend_handles_labels()
+        fig.legend(handles, plot_labels, loc='upper right', fontsize=12)
+
+        return fig, axes
 
 
 
@@ -257,6 +286,7 @@ class GMM:
                 X, Y = np.meshgrid(x, y)
                 pos = np.dstack((X, Y))[:, :, None, :]
                 Z = self.prob(pos)
+                Z = Z[:,0,:]
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
             ax.set_aspect('equal')
@@ -289,17 +319,24 @@ class IGMM(GMM):
 
     
 
-    def sample(self, B, noise = None, component_indices = None):
+    def sample(self, B, noise = None, component_indices = None, t = None):
 
         if noise is None:
             noise = np.random.randn(B, self.dim) 
-            print("Generating noise")
         if component_indices is None:
             component_indices = np.random.choice(self.n_components, size=B, p=self.weights)
 
+        if t is not None:
+            means = self.optimized_means[t]
+            epsilons = self.optimized_epsilons[t]
+        
+        else :
+            means = self.means
+            epsilons = self.epsilons
 
-        selected_means = self.means[component_indices]  # (B, d)
-        selected_epsilons = self.epsilons[component_indices]  # (B, d, d)
+
+        selected_means = means[component_indices]  # (B, d)
+        selected_epsilons = epsilons[component_indices]  # (B, d, d)
         samples = selected_means +  (np.sqrt(selected_epsilons[:,None]) * noise)
 
         return samples
@@ -316,34 +353,37 @@ class IGMM(GMM):
         # return self.gaussians.sample((B,)).numpy() ### shape B, N, d
     
     ### unifrom weights and isotropic
-    def gradient_log_density_1(self, x): #### grad of the log density, ie - grad V 
+    def gradient_log_density_1(self, x): #### grad of the log density, ie - grad V  PREVENT NUMERICAL INSTABILITY
         
         invcov_by_centered = ((x[:,None] - self.means[None]) / self.epsilons[None,:,None]) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
 
-        
-        probs = self.gaussians.log_prob(torch.as_tensor(x[:,None])).exp().numpy()[..., None] ### gives B,N,1
-        # print(type(probs))
-        # print(type(self.weights))
-        # print(type(invcov_by_centered))
-        numerator = - (self.weights[None,:,None] * invcov_by_centered * probs).sum(axis = 1) ### B, d
-        denominator = self.prob(x[:, None])[:, None]
 
-        return (numerator)/(denominator)
+        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None].numpy()
+        # mean_logprob = log_prob.mean(dim = 0)
+        
+        # log_prob_c = np.clip(log_prob , -700, 700)
+
+        prob_c = np.exp(log_prob)
     
     
+        numerator = - (self.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1) ### B, d
+        denominator = (self.weights[None,:,None] * prob_c).sum(axis = 1)
+
+        return (numerator + self.num_stab)/(denominator + self.num_stab)
+
     
     def gradient_log_density(self, x): #### grad of the log density, ie - grad V  PREVENT NUMERICAL INSTABILITY
         
         invcov_by_centered = ((x[:,None] - self.means[None]) / self.epsilons[None,:,None]) ### gives B, N, d.  B, 1, d - 1, N, d -> B, N, d
 
 
-        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None]
+        log_prob = self.gaussians.log_prob(torch.as_tensor(x[:,None]))[..., None].numpy()
         # mean_logprob = log_prob.mean(dim = 0)
-        mean_logprob = 0
         
-        log_prob_c = np.clip(log_prob - mean_logprob, -700, 700).numpy()
-
+        log_prob_c = np.clip(log_prob , -700, 700, dtype = np.float64)
         prob_c = np.exp(log_prob_c)
+
+        # prob_c = np.exp(log_prob, dtype = np.float64)
     
     
         numerator = - (self.weights[None,:,None] * invcov_by_centered * prob_c).sum(axis = 1) ### B, d
@@ -384,7 +424,7 @@ class IGMM(GMM):
         return self.get_means_evolution(), self.get_epsilons_evolution()
 
     
-    def compute_grads(self, target, noise = None, B = 1, optim_epsilon = True): ### GRAD FOR ISOTROPIC 
+    def compute_grads(self, target, noise = None, B = 1, optim_epsilon = True): ### GRAD FOR ISOTROPIC, these are euclidan grads
 
         samples = self.sample_from_each_gaussian(noise = noise, B = B) # n, b, d
 
@@ -467,7 +507,7 @@ class FGMM(GMM):
 
     
 
-    def sample(self, B, noise = None, component_indices = None):
+    def sample(self, B, noise = None, component_indices = None, t = None):
 
         if noise is None:
             noise = np.random.randn(B, self.dim) 
@@ -476,8 +516,16 @@ class FGMM(GMM):
             component_indices = np.random.choice(self.n_components, size=B, p=self.weights)
 
 
-        selected_means = self.means[component_indices]  # (B, d)
-        selected_covariances = self.covariances[component_indices]  # (B, d, d)
+        if t is not None:
+            means = self.optimized_means[t]
+            covariances = self.optimized_covs[t]
+        
+        else :
+            means = self.means
+            covariances = self.covariances
+
+        selected_means = means[component_indices]  # (B, d)
+        selected_covariances = covariances[component_indices]  # (B, d, d)
 
 
         L = np.linalg.cholesky(selected_covariances)     # shape (B, d, d)
@@ -617,3 +665,136 @@ class FGMM(GMM):
 
 
 
+
+
+
+class STGMM(GMM):
+
+    def __init__(self, means = None, epsilons = None):
+
+      
+        self.variational = True
+        self.contours = None
+
+        self.n_iter , self.n_components, self.dim = means.shape
+        self.weights = np.ones(self.n_components)/self.n_components
+
+        self.num_stab = 0
+        self.mode = "stan"
+        self.posterior_epsilons = epsilons
+        self.posterior_means = means
+
+        self.m_posterior_means = self.posterior_means.mean(axis = 0)
+        self.m_posterior_epsilons = self.posterior_epsilons.mean(axis = 0)
+        self.m_posterior_covs = (self.m_posterior_epsilons[:, None, None] * np.eye(self.dim))
+
+
+        # self.left_std_posterior_means = self.m_posterior_means - self.posterior_means.std(axis = 0)
+        # self.left_std_posterior_epsilons = self.m_posterior_epsilons - self.posterior_epsilons.std(axis = 0)
+        # self.left_std_posterior_covs = (self.left_std_posterior_epsilons[:, None, None] * np.eye(self.dim))
+
+        # self.right_std_posterior_means = self.m_posterior_means + self.posterior_means.std(axis = 0)
+        # self.right_std_posterior_epsilons = self.m_posterior_epsilons + self.posterior_epsilons.std(axis = 0)
+        # self.right_std_posterior_covs = (self.right_std_posterior_epsilons[:, None, None] * np.eye(self.dim))
+
+
+        self.m_gaussians = dist.MultivariateNormal(torch.as_tensor(self.m_posterior_means), covariance_matrix=torch.as_tensor(self.m_posterior_covs)) 
+        # self.left_std_gaussians = dist.MultivariateNormal(torch.as_tensor(self.left_std_posterior_means), covariance_matrix=torch.as_tensor(self.left_std_posterior_covs)) 
+        # self.right_std_gaussians = dist.MultivariateNormal(torch.as_tensor(self.right_std_posterior_means), covariance_matrix=torch.as_tensor(self.right_std_posterior_covs)) 
+
+
+
+
+    
+
+    def sample(self, B, noise = None, component_indices = None, mode = "mean"):
+
+        if noise is None:
+            noise = np.random.randn(B, self.dim) 
+            print("Generating noise")
+        if component_indices is None:
+            component_indices = np.random.choice(self.n_components, size=B, p=self.weights)
+
+        if mode == "mean":
+            means = self.m_posterior_means
+            epsilons = self.m_posterior_epsilons
+        
+        # elif mode == "left":
+        #     means = self.left_std_posterior_means
+        #     epsilons = self.left_std_posterior_epsilons
+
+        # elif mode == "right":
+        #     means = self.right_std_posterior_means
+        #     epsilons = self.right_std_posterior_epsilons
+
+
+        selected_means = means[component_indices]  # (B, d)
+        selected_epsilons = epsilons[component_indices]  # (B, d, d)
+
+        samples = selected_means +  (np.sqrt(selected_epsilons[:,None]) * noise)
+
+        return samples
+
+
+
+    def prob(self, x, mode = "mean"):
+        ### x needs to be B, 1, d
+
+
+        if mode == "mean":
+            gaussians = self.m_gaussians
+        
+        # elif mode == "left":
+        #     gaussians = self.left_std_gaussians
+        # elif mode == "right":
+        #     gaussians = self.right_std_gaussians
+
+
+
+        log_prob = gaussians.log_prob(torch.as_tensor(x[:,None]))
+
+        log_prob_c = np.clip(log_prob , -700, 700).numpy()
+        prob_c = np.exp(log_prob_c)
+
+        return (self.weights[None] * prob_c).sum(axis = -1)
+    
+
+    def log_prob(self,x, mode = "mean"):
+        return np.log(self.prob(x, mode) + self.num_stab)
+    
+
+
+
+
+
+    def plot_circle(self, t, ax, bound = 20):
+
+        for i in range(self.n_components):
+            center = self.optimized_means[t][i]
+            cov = self.optimized_covs[t][i]  
+            eigvals, eigvecs = np.linalg.eigh(cov)
+            order = eigvals.argsort()[::-1]
+            eigvals, eigvecs = eigvals[order], eigvecs[:, order]
+            angle = np.degrees(np.arctan2(eigvecs[1, 0], eigvecs[0, 0]))
+            width = 2  * np.sqrt(eigvals[0])
+            height = 2 * np.sqrt(eigvals[1])
+
+            ellip = Ellipse(xy=center, width=width, height=height, angle=angle,
+                        edgecolor='black', fc='None', lw=1, zorder=10)
+            
+            ax.add_patch(ellip)
+
+
+
+        ax.set_xlim(-bound, bound)
+        ax.set_ylim(-bound, bound)
+        ax.set_aspect('equal')
+
+    
+    def plot_evolution(self, ax, jump = 100, bound = 20):
+
+        for t in range(0, len(self.optimized_means), jump):
+            self.plot_circle(t, ax, bound)
+
+
+        
