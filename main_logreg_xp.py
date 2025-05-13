@@ -25,6 +25,8 @@ def parse_args():
     parser.add_argument("--train_ratio", type=float, default=0.5, help="Datas training ratio")
     parser.add_argument("--prior_eps", type=float, default=100, help="Espilon prior")
     parser.add_argument("--lr", type=float, default=1, help="Learning rate")
+    parser.add_argument("--sample_boule", type=float, default=10, help="vgmm_sample_bould")
+    parser.add_argument("--scale_cov", type=float, default=10, help="vgmm_scale_cov")
     parser.add_argument("--B_gradients", type=int, default=100, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--compute_kls", type=int, default=1000, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--hidden_units", type=int, default=10, help="If BNN hidden units")
@@ -62,11 +64,8 @@ def main(args):
     n_samples, d = dataset_train[0].shape
 
     # vgmm_sample_boule = 1 * np.sqrt(d) 
-    vgmm_sample_boule = 10
-    vgmm_scale_cov  =  10
-
-
-
+    vgmm_sample_boule = args.sample_boule
+    vgmm_scale_cov  =  args.scale_cov
 
     hyperparam = {
                   "d": d, 
