@@ -97,10 +97,9 @@ class LinReg:
 import numpy as np
 
 class SmallNeuralNetwork:
-    def __init__(self, hidden_units, data_dim):
-
+    def __init__(self, hidden_layers, data_dim):
         self.data_dim = data_dim
-        self.hidden_units = hidden_units
+        self.hidden_units = hidden_layers[0]
         self.param_dim = self.data_dim * self.hidden_units + self.hidden_units + self.hidden_units
 
     def forward(self, params , x):
@@ -151,7 +150,7 @@ class SmallNeuralNetwork:
 class LinReg_BNN:
     def __init__(self, dataset_train=None, dataset_test=None, n_samples=100,
                  d=2, Z=100, meanShift = 1, cov=None, seed=1,
-                 prior_mean=None, prior_eps=None , hidden_units=50, sigma=1, n_layers=1):
+                 prior_mean=None, prior_eps=None , hidden_layers=[50], sigma=1, n_layers=1):
         self.scaler = StandardScaler()
         self.Z = Z
         self.fixed_theta = None
@@ -162,8 +161,7 @@ class LinReg_BNN:
         self.y_test = dataset_test[1]
         self.data_dim  = self.X.shape[-1]
 
-        hidden_sizes = [hidden_units] * 1
-        self.neural_network = SimpleMLP(data_dim=self.dim, hidden_sizes=hidden_sizes, output_dim= 1, task='regression')
+        self.neural_network = SimpleMLP(data_dim=self.dim, hidden_sizes=hidden_layers, output_dim= 1, task='regression')
         self.bnn_dim = self.neural_network.param_dim
         self.dim = self.bnn_dim
 

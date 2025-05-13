@@ -17,7 +17,7 @@ class Target:
                 mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
                 dataset_train = None, dataset_test = None,  d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
                 n_classes = 3, ### multiclass logreg traget param 
-                hidden_units = 10, sigma = 100, n_layers = 1): ### lin reg param
+                hidden_layers = [10], sigma = 1, n_layers = 1): ### lin reg param
 
         
         self.name = name 
@@ -36,14 +36,14 @@ class Target:
         #     self.model = LogReg_withBNN(dataset_train = dataset_train, dataset_test = dataset_test, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean )
 
         elif self.name == "mlogreg":
-            self.model = MultiClassLogReg(dataset_train  = dataset_train, dataset_test =dataset_test,  n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes)
+            self.model = MultiClassLogReg(dataset_train  = dataset_train, dataset_test =dataset_test,  n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes, hidden_layers=hidden_layers)
 
 
         elif self.name == "linreg":
             self.model = LinReg(dataset_train  = dataset_train, dataset_test=dataset_test,  prior_eps=prior_eps, prior_mean=prior_mean)
 
         elif self.name == "linreg_bnn":
-            self.model = LinReg_BNN(dataset_train  = dataset_train, dataset_test=dataset_test,  prior_eps=prior_eps, prior_mean=prior_mean, hidden_units = hidden_units, sigma = sigma, n_layers = n_layers)
+            self.model = LinReg_BNN(dataset_train  = dataset_train, dataset_test=dataset_test,  prior_eps=prior_eps, prior_mean=prior_mean, hidden_layers = hidden_layers, sigma = sigma, n_layers = n_layers)
 
 
 
