@@ -42,6 +42,7 @@ class VI_GMM:
         self.n_iterations = n_iterations
         self.learning_rate = learning_rate
         self.kls = []
+        self.rmse = []
         self.BKL = BKL
         self.BG = BG
         self.GM = []
@@ -149,10 +150,43 @@ class VI_GMM:
             if _ % compute_kl == 0:
                 self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
-            if _ % plot_iter == 0:
-
+            if _ % 100 == 0:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
+                B = 10000
+                vi_samples = self.vgmm.sample(B, t=-1)
+                X_ = torch.from_numpy(self.target.model.X)
+                res = np.zeros_like(self.target.model.y)
+                for i in range(B):
+                    theta = vi_samples[i]
+                    theta_ = torch.from_numpy(theta)
+                    self.target.model.neural_network.set_weights_from_vector(theta_)
+                    with torch.no_grad():
+                        y_hat_ = self.target.model.neural_network.forward(X_).squeeze()
+                        res += y_hat_.numpy()
+                res /= B
+                diff = res - self.target.model.y
+                rmse = np.sqrt(diff.dot(diff) / len(diff))
+                self.rmse.append(rmse)
+                print(f"RMSE: ", rmse)
+            if _ % plot_iter == 0:
+                B = 10000
+                vi_samples = self.vgmm.sample(B, t=-1)
+                X_ = torch.from_numpy(self.target.model.X)
+                res = np.zeros_like(self.target.model.y)
+                for i in range(B):
+                    theta = vi_samples[i]
+                    theta_ = torch.from_numpy(theta)
+                    self.target.model.neural_network.set_weights_from_vector(theta_)
+                    with torch.no_grad():
+                        y_hat_ = self.target.model.neural_network.forward(X_).squeeze()
+                        res += y_hat_.numpy()
+                res /= B
+                plt.clf()
+                plt.plot(res,  label = "ibw")
+                plt.plot(self.target.model.y, label = "real")
+                plt.legend()
+                plt.savefig("optim.pdf")
 
         self.time = time.time() - start
 
@@ -175,6 +209,7 @@ class VI_GMM:
             np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
 
         np.save(f"{folder}/kls.npy", self.kls)
+        np.save(f"{folder}/rmse.npy", self.rmse)
         np.save(f"{folder}/time.npy", self.time)
 
         
