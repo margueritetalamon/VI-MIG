@@ -263,7 +263,8 @@ class LinReg_BNN:
 
         # gradients = np.concatenate([grad_w, grad_sigma[:,None]], axis=1)
 
-        gradients = - (theta - self.prior_mean)/(self.prior_eps * self.prior_eps)
+        # gradients = - (theta - self.prior_mean)/(self.prior_eps * self.prior_eps)
+        gradients = - (theta - self.prior_mean)/(self.prior_eps)
         # print("grad prior", gradients.shape)
         return gradients
     
