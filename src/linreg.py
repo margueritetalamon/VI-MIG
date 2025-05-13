@@ -366,57 +366,6 @@ class LinReg_BNN:
             grad = self.neural_network.get_gradients_as_vector().numpy()
             grad_thetas[i] = grad
         return grad_thetas
-
-    # def gradient_log_likelihood(self, thetas):
-    #     ### theta can be a sample so of shape B, d
-    #     B, d = thetas.shape
-    #     X, y = self.batchized_data()
-    #     X_ = torch.from_numpy(X)
-    #     y_ = torch.from_numpy(y)
-    #     
-    #     import threading
-    #     import queue
-    #     
-    #     result_queue = queue.Queue()
-    #     
-    #     def process_theta(i, theta):
-    #         theta_ = torch.from_numpy(theta)
-    #         # Clone the network for thread safety
-    #         nn_copy = self.neural_network.clone()
-    #         # zero the gradients
-    #         nn_copy.clear_grads()
-    #         # load theta param
-    #         nn_copy.set_weights_from_vector(theta_)
-    #         # forward
-    #         y_hat_ = nn_copy.forward(X_).squeeze(1)
-    #         # backward
-    #         # log_likelihood = -((y_ - y_hat_)**2)/(2*self.sigma) - torch.log(torch.tensor(2*np.pi * self.sigma))/2
-    #         diff = y_ - y_hat_
-    #         log_likelihood = -torch.dot(diff, diff) / (2*self.sigma * self.sigma) - torch.log(torch.tensor(np.sqrt(2 * np.pi) * self.sigma))
-    #         lll_ = log_likelihood.sum()
-    #         lll_.backward()
-    #         # store gradient
-    #         grad = nn_copy.get_gradients_as_vector().numpy()
-    #         result_queue.put((i, grad))
-    #     
-    #     # Create and start threads
-    #     threads = []
-    #     for i in range(B):
-    #         thread = threading.Thread(target=process_theta, args=(i, thetas[i]))
-    #         threads.append(thread)
-    #         thread.start()
-    #     
-    #     # Wait for all threads to complete
-    #     for thread in threads:
-    #         thread.join()
-    #     
-    #     # Collect results
-    #     grad_thetas = np.zeros((B, d))
-    #     while not result_queue.empty():
-    #         i, grad = result_queue.get()
-    #         grad_thetas[i] = grad
-    #     
-    #     return grad_thetas
     
     def grad_log_prior(self, theta):
         ### theta of shape B,d 
