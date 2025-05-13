@@ -4,6 +4,8 @@ import numpy.linalg as LA
 from scipy.stats import multivariate_normal , gamma
 from scipy.stats import special_ortho_group
 from einops import rearrange
+import torch
+import torch.nn as nn
 
 # from src.neural_network import MultiLayerNeuralNetwork
 
@@ -146,13 +148,122 @@ class SmallNeuralNetwork:
     def flatten_gradients(self, grad_W, grad_v, grad_b):
         return np.concatenate([rearrange(grad_W, "b n h d -> b n (h d)"), grad_v, grad_b], axis = -1)
     
+class SimpleMLP(nn.Module):
+    def __init__(self, data_dim, hidden_sizes, output_dim, task='classification'):
+        super(SimpleMLP, self).__init__()
 
+        self.data_dim = data_dim
+        self.hidden_sizes = hidden_sizes
+        self.ouput_dim = output_dim
+        self.task = task
 
+        # Define layers
+        self.layers = nn.ModuleList()
+
+        # Input to first hidden layer
+        self.layers.append(nn.Linear(data_dim, hidden_sizes[0]))
+
+        # Hidden layers
+        for i in range(len(hidden_sizes)-1):
+            self.layers.append(nn.Linear(hidden_sizes[i], hidden_sizes[i+1]))
+
+        # Output layer
+        self.layers.append(nn.Linear(hidden_sizes[-1], output_dim))
+
+        # Activation function
+        self.relu = nn.ReLU()
+
+        # Output activation based on task
+        self.task = task
+        if task == 'classification':
+            self.output_activation = nn.Sigmoid() if output_dim == 1 else nn.Softmax(dim=1)
+        # For regression, no activation is needed at the output
+
+        # Calculate and store the total number of parameters
+        self.param_dim = self._count_parameters()
+
+    def _count_parameters(self):
+        """Count and return the total number of parameters in the model"""
+        return sum(p.numel() for p in self.parameters())
+
+    def forward(self, x):
+        # Forward pass through all but the last layer with ReLU
+        for layer in self.layers[:-1]:
+            x = self.relu(layer(x))
+
+        # Output layer
+        x = self.layers[-1](x)
+
+        # Apply output activation if classification
+        if self.task == 'classification':
+            x = self.output_activation(x)
+
+        return x
+
+    def get_weights_as_vector(self):
+        """Extract all weights as a single 1D vector"""
+        weight_vector = []
+
+        for param in self.parameters():
+            weight_vector.append(param.data.view(-1))
+
+        return torch.cat(weight_vector)
+
+    def set_weights_from_vector(self, weight_vector):
+        """Set all weights from a single 1D vector"""
+        # Keep track of consumed weights
+        pointer = 0
+
+        for param in self.parameters():
+            # Number of weights in this parameter
+            num_param = param.numel()
+
+            # Set the parameter data
+            param.data = weight_vector[pointer:pointer+num_param].view(param.data.shape)
+
+            # Move the pointer
+            pointer += num_param
+
+    def get_gradients_as_vector(self):
+        """Extract all gradients as a single 1D vector"""
+        grad_vector = []
+
+        for param in self.parameters():
+            # Check if gradients exist
+            if param.grad is not None:
+                grad_vector.append(param.grad.view(-1))
+            else:
+                # If no gradient, add zeros
+                grad_vector.append(torch.zeros_like(param.data.view(-1)))
+
+        return torch.cat(grad_vector)
+
+    def clear_grads(self):
+        self.zero_grad()
+        # for param in self.parameters():
+        #     if param.grad is not None:
+        #         param.grad.zero_()
+
+    def clone(self):
+        """Create a deep copy of the network with the same architecture and weights"""
+        # Create a new instance with the same architecture
+        clone_model = SimpleMLP(
+            data_dim=self.data_dim,
+            hidden_sizes=self.hidden_sizes,
+            output_dim=self.ouput_dim,
+            task=self.task
+        )
+        
+        # Copy the weights from this model to the clone
+        clone_model.load_state_dict(self.state_dict())
+        
+        return clone_model
 
 
 class LinReg_BNN:
-    def __init__(self, dataset_train=None, dataset_test = None, n_samples=100, d=2, Z = 100, meanShift = 1, cov = None, seed = 1, prior_mean = None, prior_eps = None , hidden_units =  50, sigma = 1, n_layers = 1):
-        
+    def __init__(self, dataset_train=None, dataset_test=None, n_samples=100,
+                 d=2, Z=100, meanShift = 1, cov=None, seed=1,
+                 prior_mean=None, prior_eps=None , hidden_units=50, sigma=1, n_layers=1):
         self.scaler = StandardScaler()
         self.Z = Z
         self.fixed_theta = None
@@ -162,20 +273,16 @@ class LinReg_BNN:
         self.X_test = self.scaler.transform(dataset_test[0])
         self.y_test = dataset_test[1]
         self.data_dim  = self.X.shape[-1]
-        
 
-        # self.neural_network = SmallNeuralNetwork(hidden_units=hidden_units, data_dim = self.dim )
-        self.neural_network = SmallNeuralNetwork(data_dim = self.data_dim , hidden_units=hidden_units)
+        hidden_sizes = [hidden_units] * 1
+        self.neural_network = SimpleMLP(data_dim=self.dim, hidden_sizes=hidden_sizes, output_dim= 1, task='regression')
         self.bnn_dim = self.neural_network.param_dim
-        # self.dim = self.bnn_dim + 1
         self.dim = self.bnn_dim
-
 
         #### PRIOR ON PARAMETERS OF THE BNN
         self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.bnn_dim)
         self.prior_eps  = prior_eps if prior_eps is not None else 1
         self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.bnn_dim))
-
 
         # ##### PRIOR ON SIGMA the scale of the additive noise in the linear regression. 
         # self.alpha_sigma = alpha
@@ -183,22 +290,15 @@ class LinReg_BNN:
         # self.prior_sigma = gamma(self.alpha_sigma, self.lambda_sigma)
         self.sigma = sigma
 
-        print(self.dim)
-
-     
-
-    
+        print("Number of parameters in model: ", self.dim)
 
     def batchized_data(self, M = 32):
-
         indices = np.random.permutation(len(self.X))[:M]
         # print(indices[:2])
         # print(indices.shape)
         X = self.X[indices]
         y = self.y[indices]
         return X, y
-
-        
 
     def load_data(self, dataset):
         X, y = dataset
@@ -210,19 +310,22 @@ class LinReg_BNN:
         self.y = y
         self.n_samples, self.dim = X.shape
     
-
-    def log_likelihood(self, theta): ###  log likelihood for the parameter theta theta of  shape B, d
-
-        # w , sigma = self.unpack(theta)
-
-        # logits = self.neural_network.forward(w, self.X) # B, n , 
-        # print("samles", theta.shape)
-        logits  = self.neural_network.forward(theta, self.X)
-        # print("logits", logits.shape)
-
-        # lll = (-((self.y - logits)**2)/(2*sigma[:, None]**2) - np.log(2*np.pi * sigma[:, None]**2)/2).sum(axis = -1)
-        lll = (-((self.y - logits)**2)/(2*self.sigma) - np.log(2*np.pi*self.sigma)/2).sum(axis = -1)
-
+    def log_likelihood(self, thetas): ###  log likelihood for the parameter theta theta of  shape B, d
+        B, _ = thetas.shape
+        X_ = torch.from_numpy(self.X)
+        y_ = torch.from_numpy(self.y)
+        lll = np.zeros(B)
+        for i in range(B):
+            theta = thetas[i]
+            theta_ = torch.from_numpy(theta)
+            self.neural_network.set_weights_from_vector(theta_)
+            # forward
+            with torch.no_grad():
+                y_hat_ = self.neural_network.forward(X_).squeeze(1)
+                # compute lll
+                diff = y_ - y_hat_
+                lll_ = (-torch.dot(diff, diff) / (2 * self.sigma) - torch.log(torch.tensor(2 * np.pi * self.sigma))/2).sum()
+                lll[i] = lll_
         return lll
     
     def unpack(self, theta):
@@ -237,41 +340,83 @@ class LinReg_BNN:
         # W, v, b = self.neural_network.unpack_params(w)
         return w, sigma
 
-    
-    def gradient_log_likelihood(self, theta): 
+    def gradient_log_likelihood(self, thetas):
         ### theta can be a sample so of shape B, d
-        X,y  = self.batchized_data()
-        n = X.shape[0]
+        B, d = thetas.shape
+        X, y  = self.batchized_data()
+        X_ = torch.from_numpy(X)
+        y_ = torch.from_numpy(y)
 
-        # w, sigma = self.unpack(theta)
+        grad_thetas = np.zeros((B, d))
+        for i in range(B):
+            theta = thetas[i]
+            theta_ = torch.from_numpy(theta)
+            # zero the gradients
+            self.neural_network.clear_grads()
+            # load theta param
+            self.neural_network.set_weights_from_vector(theta_)
+            # forward
+            y_hat_ = self.neural_network.forward(X_).squeeze(1)
+            # backward
+            diff = y_ - y_hat_
+            log_likelihood = -torch.dot(diff, diff) / (2 * self.sigma) - torch.log(torch.tensor(2 * np.pi * self.sigma)) / 2
+            lll_ = log_likelihood.sum()
+            lll_.backward()
+            # store gradient
+            grad = self.neural_network.get_gradients_as_vector().numpy()
+            grad_thetas[i] = grad
+        return grad_thetas
 
-        # logits = self.neural_network.forward(w, X) # B, n_samples
-        # resid = (y - logits)
-        # gradients_bnn_w = self.neural_network.compute_gradients(w, X) # B, n , dim_params
-        # gradient_sigma = (resid**2 ).sum(axis = -1) / (sigma**3) - n/sigma 
-
-        # gradient_w = (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
-
-
-        # gradients = np.concatenate([gradient_w, gradient_sigma[:,None]], axis=1)
-        # print("samles", theta.shape)
-    
-        logits = self.neural_network.forward(theta, X) # B, n_samples
-        # print("LOGITS",logits.shape)
-        resid = (y - logits)
-        # print("resid", resid.shape)
-        gradients_bnn_w = self.neural_network.compute_gradients(theta, X) #  B, n , dim_params
-        # print("grad BNN", gradients_bnn_w.shape)
-
-        # gradients= (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
-        gradients= (resid[..., None]*gradients_bnn_w/self.sigma).sum(axis = 1)
-        # print("grad LL", gradients.shape)
-
-
-
-
-        
-        return gradients ### shape  B, dim_params
+    # def gradient_log_likelihood(self, thetas):
+    #     ### theta can be a sample so of shape B, d
+    #     B, d = thetas.shape
+    #     X, y = self.batchized_data()
+    #     X_ = torch.from_numpy(X)
+    #     y_ = torch.from_numpy(y)
+    #     
+    #     import threading
+    #     import queue
+    #     
+    #     result_queue = queue.Queue()
+    #     
+    #     def process_theta(i, theta):
+    #         theta_ = torch.from_numpy(theta)
+    #         # Clone the network for thread safety
+    #         nn_copy = self.neural_network.clone()
+    #         # zero the gradients
+    #         nn_copy.clear_grads()
+    #         # load theta param
+    #         nn_copy.set_weights_from_vector(theta_)
+    #         # forward
+    #         y_hat_ = nn_copy.forward(X_).squeeze(1)
+    #         # backward
+    #         # log_likelihood = -((y_ - y_hat_)**2)/(2*self.sigma) - torch.log(torch.tensor(2*np.pi * self.sigma))/2
+    #         diff = y_ - y_hat_
+    #         log_likelihood = -torch.dot(diff, diff) / (2*self.sigma * self.sigma) - torch.log(torch.tensor(np.sqrt(2 * np.pi) * self.sigma))
+    #         lll_ = log_likelihood.sum()
+    #         lll_.backward()
+    #         # store gradient
+    #         grad = nn_copy.get_gradients_as_vector().numpy()
+    #         result_queue.put((i, grad))
+    #     
+    #     # Create and start threads
+    #     threads = []
+    #     for i in range(B):
+    #         thread = threading.Thread(target=process_theta, args=(i, thetas[i]))
+    #         threads.append(thread)
+    #         thread.start()
+    #     
+    #     # Wait for all threads to complete
+    #     for thread in threads:
+    #         thread.join()
+    #     
+    #     # Collect results
+    #     grad_thetas = np.zeros((B, d))
+    #     while not result_queue.empty():
+    #         i, grad = result_queue.get()
+    #         grad_thetas[i] = grad
+    #     
+    #     return grad_thetas
     
     def grad_log_prior(self, theta):
         ### theta of shape B,d 
@@ -281,35 +426,23 @@ class LinReg_BNN:
 
         # gradients = np.concatenate([grad_w, grad_sigma[:,None]], axis=1)
 
-        gradients = - (theta - self.prior_mean)/self.prior_eps
+        gradients = - (theta - self.prior_mean)/(self.prior_eps * self.prior_eps)
         # print("grad prior", gradients.shape)
-
-
-
         return gradients
     
-        
-    def gradient_log_density(self, theta): 
+    def gradient_log_density(self, thetas):
         ### theta can be a sample so of shape B, d
-
-        return self.gradient_log_likelihood(theta) + self.grad_log_prior(theta)
+        return self.gradient_log_likelihood(thetas) + self.grad_log_prior(thetas)
     
-
     def prob(self, X):  ###
         probs = self.log_prob(X)
         return np.exp(probs)
 
-
-    def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
-        
+    def log_prob(self, thetas): ###  log density of the posterior UNORMALIZED
         # w, sigma = self.unpack(theta)
         # return self.log_likelihood(theta) + self.prior.logpdf(w) + self.prior_sigma.logpdf(sigma)
-        return self.log_likelihood(theta) + self.prior.logpdf(theta) 
-
-
+        return self.log_likelihood(thetas) + self.prior.logpdf(thetas)
 
     def compute_KL(self, vgmm, noise = None, component_indices = None , B = 1000):
         samples = vgmm.sample(B, noise, component_indices)
-
         return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples)).mean()
-
