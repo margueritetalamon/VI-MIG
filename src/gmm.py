@@ -40,16 +40,24 @@ class GMM:
         
         self.weights = weights if weights is not None else self.generate_random_weights(self.n_components)
         self.means = means if means is not None else self.generate_random_means(s)
-        self.covariances = covs if covs is not None else self.generate_random_covs(self.n_components, self.dim, self.mode, scale, self.variational)
-        self.invcov = np.array([np.linalg.inv(cov) for cov in self.covariances])
+        if self.mode != "iso":
+            self.covariances = covs if covs is not None else self.generate_random_covs(self.n_components, self.dim, self.mode, scale, self.variational)
+            self.invcov = np.array([np.linalg.inv(cov) for cov in self.covariances])
+        else:
+            self.covariances = None
+            self.invcov = None
 
         if self.mode == "iso":
-            self.epsilons = self.covariances[:,0,0]  ### this is already squared N(0, epsilon* Id)
+            self.epsilons = np.ones(self.n_components) * scale
+            print(f"{self.epsilons.shape=}")
 
-
-        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
-
-
+        # self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
+        means_ = torch.as_tensor(self.means)
+        N = self.means.shape[0]
+        eps_ = torch.ones(N) * torch.tensor(self.epsilons)
+        scale_ = eps_.view(N, 1) ** (1/2)
+        base = dist.Normal(loc=means_, scale=scale_)
+        self.gaussians = dist.Independent(base, 1)
 
     def generate_random_means(self, s):
         return np.random.uniform(low=-s, high=s, size=(self.n_components, self.dim))
@@ -409,7 +417,15 @@ class IGMM(GMM):
         self.means = new_means
         # self.covariances = new_covs
 
-        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(new_covs)) 
+        # self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(new_covs)) 
+        means_ = torch.as_tensor(self.means)
+        N = self.means.shape[0]
+        eps_ = torch.ones(N) * self.epsilons
+        scale_ = eps_.view(N, 1) ** (1/2)
+        # print(f"{means_=}")
+        # print(f"{scale_=}")
+        base = dist.Normal(loc=means_, scale=scale_)
+        self.gaussians = dist.Independent(base, 1)
 
 
     def get_epsilons_evolution(self):
@@ -565,7 +581,13 @@ class FGMM(GMM):
         self.invcov = np.array([np.linalg.inv(cov) for cov in self.covariances])
 
 
-        self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
+        # self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(self.covariances)) 
+        means_ = torch.as_tensor(self.means)
+        N = self.means.shape[0]
+        eps_ = torch.ones(N) * self.epsilons
+        scale_ = eps_.view(N, 1) ** (1/2)
+        base = dist.Normal(loc=means_, scale=scale_)
+        self.gaussians = dist.Independent(base, 1)
 
 
     def get_epsilons_evolution(self):

@@ -150,26 +150,56 @@ class VI_GMM:
             if _ % compute_kl == 0:
                 self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
-            if _ % 100 == 0:
+            if _ % plot_iter == 0:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
-                B = 10000
+                B = 1000
                 vi_samples = self.vgmm.sample(B, t=-1)
-                X_ = torch.from_numpy(self.target.model.X)
-                res = np.zeros_like(self.target.model.y)
-                for i in range(B):
-                    theta = vi_samples[i]
-                    theta_ = torch.from_numpy(theta)
-                    self.target.model.neural_network.set_weights_from_vector(theta_)
-                    with torch.no_grad():
-                        y_hat_ = self.target.model.neural_network.forward(X_).squeeze()
-                        res += y_hat_.numpy()
-                res /= B
-                diff = res - self.target.model.y
-                rmse = np.sqrt(diff.dot(diff) / len(diff))
-                self.rmse.append(rmse)
-                print(f"RMSE: ", rmse)
-            if _ % plot_iter == 0:
+                if self.target.name in ["linreg", "linreg_bnn"]:
+                    # rmse = self.target.model.compute_rmse(vi_samples, self.target.model.X, self.target.model.y)
+                    # '''
+                    X_ = torch.from_numpy(self.target.model.X)
+                    res = np.zeros_like(self.target.model.y)
+                    for i in range(B):
+                        theta = vi_samples[i]
+                        theta_ = torch.from_numpy(theta)
+                        self.target.model.neural_network.set_weights_from_vector(theta_)
+                        with torch.no_grad():
+                            y_hat_ = self.target.model.neural_network.forward(X_).squeeze()
+                            res += y_hat_.numpy()
+                    res /= B
+                    diff = res - self.target.model.y
+                    rmse = np.sqrt(diff.dot(diff) / len(diff))
+                    # '''
+                    self.rmse.append(rmse)
+                    print(f"RMSE: ", rmse)
+                elif self.target.name in ["logreg", "mlogreg"]:
+                    N, _ = self.target.model.X.shape
+                    X_ = torch.from_numpy(self.target.model.X)
+                    K = self.target.model.n_classes
+                    probs = np.zeros((B, N, K))
+                    for i in range(B):
+                        theta = vi_samples[i]
+                        theta_ = torch.from_numpy(theta)
+                        nn = self.target.model.neural_network
+                        nn.set_weights_from_vector(theta_)
+                        # forward
+                        with torch.no_grad():
+                            probs_ = nn.forward(X_) # logits come from softmax of nn
+                            probs[i] = probs_.numpy()
+
+                    y_hat = probs.mean(axis = 0).argmax(axis = -1) # mean over all samples B, then get class with argmax
+                    assert y_hat.shape[0] == N
+                    assert y_hat.size == N
+                    #
+                    y = self.target.model.y.argmax(axis = -1)
+                    assert y.shape[0] == N
+                    assert y.size == N
+                    #
+                    acc = (y_hat == y).mean()
+                    self.rmse.append(acc)
+                    print(f"Mean accuracy: ", acc)
+            if _ % plot_iter == 0 and self.target.name in ["linreg", "linreg_bnn"]:
                 B = 10000
                 vi_samples = self.vgmm.sample(B, t=-1)
                 X_ = torch.from_numpy(self.target.model.X)

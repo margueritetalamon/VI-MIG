@@ -6,7 +6,10 @@ from scipy.stats import special_ortho_group
 from einops import rearrange
  
 
+import torch
+from src.simple_mlp import SimpleMLP
 from src.gmm import GMM
+import torch.distributions as dist
 
 import  math
 
@@ -21,25 +24,24 @@ class LogReg:
         self.seed = seed
 
         if dataset_train is None:
-            self.dim = d
+            self.data_dim = d
             self.n_samples = n_samples
-            self.generate_data(n_samples )
+            self.generate_data(n_samples)
         else:
             self.load_data(dataset_train)
  
+        self.dim = self.data_dim
         self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.dim)
         self.prior_eps  = prior_eps if prior_eps is not None else 1
 
         self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
 
-
-
-        print(self.dim)
+        print(f"Parameters dim = {self.dim}")
 
         self.X_test = self.scaler.transform(dataset_test[0])
         self.y_test = dataset_test[1]
-        self.n_classes = 2
-
+        self.output_dim = self.y.shape[1]
+        self.n_classes = self.output_dim if self.output_dim > 1 else 2
 
     def generate_cov(self,c = 1, scale = 1, rotate = True, normalize = True ):
 
@@ -92,7 +94,7 @@ class LogReg:
         self.X = self.scaler.fit_transform(X)
         # self.y = y.reshape(-1, 1)
         self.y = y
-        self.n_samples, self.dim = X.shape
+        self.n_samples, self.data_dim = X.shape
         
     def sigmoid(self, x):
         return 1/(1+np.exp(-x))
@@ -200,26 +202,29 @@ class LogReg:
 
 
 class MultiClassLogReg(LogReg):
-    def __init__(self, n_classes=3, **kwargs):
+    def __init__(self, hidden_layers, n_classes=3, **kwargs):
         super().__init__(**kwargs)
 
-
-
-        self.n_classes = len(set(kwargs["dataset_train"][-1].tolist())) if kwargs["dataset_train"] is not None else n_classes
-
-        self.data_dim = self.dim
-        self.param_dim = self.data_dim * self.n_classes
-        self.dim = self.param_dim
         self.name = "mlogreg"
 
+        self.init_model(hidden_layers)
+        print("Data dim: ", self.data_dim)
+        print("Parameters dim: ", self.param_dim)
+        print("Num classes: ", self.n_classes)
 
-        self.prior_mean = np.zeros(self.dim)
-        self.prior_eps  = 1
+        self.prior_mean = np.zeros(self.param_dim)
+        self.prior_eps  = 100
 
+        # self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.param_dim))
+        # self.prior = IsotropicGaussian(self.prior_mean, self.prior_eps)
+        base = dist.Normal(loc=torch.as_tensor(self.prior_mean), scale=torch.tensor(self.prior_eps**(1/2)))
+        self.prior = dist.Independent(base, 1)
 
-        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
-
-
+    def init_model(self, hidden_layers):
+        # hidden layers, output dim
+        self.neural_network = SimpleMLP(data_dim = self.data_dim, hidden_sizes=hidden_layers, output_dim=self.output_dim, task='classification')
+        self.param_dim = self.neural_network.param_dim
+        self.dim = self.param_dim
 
     def generate_data(self, n_samples):
         np.random.seed(self.seed)
@@ -261,43 +266,43 @@ class MultiClassLogReg(LogReg):
         self.y = np.array(self.y)
         self.X = np.array(self.X)
 
-
-        ###  loglikelihood 
-    def log_likelihood(self, theta, split = "train"):
+    def log_likelihood(self, thetas, split = "train"):
         # theta is of shape B, d, K 
-
         if split == "train":
             X = self.X
             y = self.y
-
         else:
             X = self.X_test
             y = self.y_test
 
-        if theta.ndim == 2:
-            theta = self.unpack_theta(theta)
+        B, _ = thetas.shape
+        X_ = torch.from_numpy(X)
+        y_ = torch.from_numpy(y)
+        lll = np.zeros(B)
+        for i in range(B):
+            theta = thetas[i]
+            theta_ = torch.from_numpy(theta)
+            self.neural_network.set_weights_from_vector(theta_)
+            # forward
+            with torch.no_grad():
+                probs_ = self.neural_network.forward(X_) # logits come from softmax of nn
+                # compute lll
+                lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-3))).sum(dim = 1)).sum()
+                lll[i] = lll_.numpy()
+        return lll
 
-        K = self.n_classes
-
-        logits = np.einsum("nd,bdk->bnk", X, theta) # B, n_samples, K 
-        exp_logits = np.exp(logits)
-        sum_exp_logits = exp_logits.sum(axis =  -1) # B, n_samples
-        ((logits - np.log(sum_exp_logits)[..., None])[:, (y[..., None] == np.arange(0, K))]) ### B, n_samples
-
-        return ((logits - np.log(sum_exp_logits)[..., None])[:, (y[..., None] == np.arange(0, K))]).sum(axis = -1) ### B 
-
-
-
+        # if theta.ndim == 2:
+        #     theta = self.unpack_theta(theta)
+        # logits = np.einsum("nd,bdk->bnk", X, theta) # B, n_samples, K 
+        # exp_logits = np.exp(logits)
+        # sum_exp_logits = exp_logits.sum(axis =  -1) # B, n_samples
+        # return ((logits - np.log(sum_exp_logits)[..., None])[:, (y[..., None] == np.arange(0, K))]).sum(axis = -1) ### B 
 
     def grad_log_prior(self, theta):
-            ### theta of shape B, d*k 
-
-            if theta.ndim == 3: # theta B, d , k
-                theta = self.flatten_theta(theta)
-
-
-            return - (theta - self.prior_mean)/self.prior_eps
-
+        ### theta of shape B, d*k 
+        # if theta.ndim == 3: # theta B, d , k
+            # theta = self.flatten_theta(theta)
+        return - (theta - self.prior_mean)/self.prior_eps
 
     def unpack_theta(self, theta):
         ## theta of shape B, d * k 
@@ -306,37 +311,63 @@ class MultiClassLogReg(LogReg):
     def flatten_theta(self, theta):
         ### theta of  shape B, d, k
         return rearrange(theta, "B d k -> B (d k)")      
+
+    # def gradient_log_likelihood(self, theta):
+    #     
+    #     if theta.ndim == 2: # theta B, (d * k)
+    #         theta = self.unpack_theta(theta)
+    #
+    #     ##  else theta already theta B, d , k
+    #     logits= np.einsum("nd,bdk->bnk", self.X, theta) # B, n_samples, K 
+    #     exp_logits = np.exp(logits)
+    #
+    #     denominator = exp_logits.sum(axis =  -1)
+    #     probs = exp_logits/denominator[..., None]
+    #
+    #     indicatrix = (self.y[..., None] == np.arange(0, self.n_classes))
+    #     grad_forall_k = np.einsum("nd,bnk->bdk", self.X, (indicatrix[None, :, :] - probs))
+    #     grad_flatten = rearrange(grad_forall_k, "B d k -> B (d k)" )
+    #     return  grad_flatten
+
+    def batchized_data(self, M = 32):
+        indices = np.random.permutation(len(self.X))[:M]
+        X = self.X[indices]
+        y = self.y[indices]
+        return X, y
+
+    def gradient_log_likelihood(self, thetas):
+        B, d = thetas.shape
+        X, y = self.batchized_data()
+        X_ = torch.from_numpy(X)
+        y_ = torch.from_numpy(y)
+        grad_thetas = np.zeros((B, d))
+        for i in range(B):
+            theta = thetas[i]
+            theta_ = torch.from_numpy(theta)
+            # zero the gradients
+            self.neural_network.clear_grads()
+            # load theta param
+            self.neural_network.set_weights_from_vector(theta_)
+            # forward
+            probs_ = self.neural_network.forward(X_) # logits come from softmax of nn
+            # compute lll and backward
+            lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-3))).sum(dim = 1)).sum()
+            lll_.backward()
+            # store gradient
+            grad = self.neural_network.get_gradients_as_vector().numpy()
+            grad_thetas[i] = grad
+        return grad_thetas
     
-
-
-    def gradient_log_likelihood(self, theta):
-        
-        if theta.ndim == 2: # theta B, (d * k)
-            theta = self.unpack_theta(theta)
-
-        ##  else theta already theta B, d , k
-        logits= np.einsum("nd,bdk->bnk", self.X, theta) # B, n_samples, K 
-        exp_logits = np.exp(logits)
-
-        denominator = exp_logits.sum(axis =  -1)
-        probs = exp_logits/denominator[..., None]
-
-        indicatrix = (self.y[..., None] == np.arange(0, self.n_classes))
-        grad_forall_k = np.einsum("nd,bnk->bdk", self.X, (indicatrix[None, :, :] - probs))
-        grad_flatten = rearrange(grad_forall_k, "B d k -> B (d k)" )
-        return  grad_flatten
-    
-
     def gradient_log_density(self, theta): 
         ### theta can be a sample so of shape B, d*k or B, d, k 
-
-        return self.gradient_log_likelihood(theta) + self.grad_log_prior(theta)  ### flatten so of shape B , (d*k)
+        gll = self.gradient_log_likelihood(theta)
+        # print(f"{np.isnan(gll).any()=}")
+        glp = self.grad_log_prior(theta)
+        # print(f"{np.isnan(glp).any()=}")
+        return  gll + glp  ### flatten so of shape B , (d*k)
     
-
     def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
-
-        return self.log_likelihood(theta) + self.prior.logpdf(theta)
-    
+        return self.log_likelihood(theta) + self.prior.log_prob(torch.as_tensor(theta)).numpy()
 
     def evaluate_accuracy(self, vgmm, B=1000, noise=None, component_indices=None, jump=1, split="test"):
 
@@ -352,15 +383,30 @@ class MultiClassLogReg(LogReg):
 
         n_iter = len(vgmm.optimized_means)
 
-        for t in range(0,n_iter, jump):
-            beta = vgmm.sample(B = B, noise = noise, component_indices = component_indices, t = t)
-            beta = self.unpack_theta(beta)
-            logits = np.einsum("nd,bdk->bnk", X, beta) # B, n_samples, K 
+        for t in range(0, n_iter, jump):
+            thetas = vgmm.sample(B = B, noise = noise, component_indices = component_indices, t = t)
+            N, _ = X.shape
+            X_ = torch.from_numpy(X)
+            K = self.n_classes
+            probs = np.zeros((B, N, K))
+            for i in range(B):
+                theta = thetas[i]
+                theta_ = torch.from_numpy(theta)
+                self.neural_network.set_weights_from_vector(theta_)
+                # forward
+                with torch.no_grad():
+                    probs_ = self.neural_network.forward(X_) # logits come from softmax of nn
+                    probs[i] = probs_.numpy()
 
-            probs = np.exp(logits)/(np.exp(logits).sum(axis = -1))[...,None]
-            y_hat = probs.mean(axis = 0).argmax(axis = -1)
-            acc.append((y_hat == y).mean())
-
+            y_hat = probs.mean(axis = 0).argmax(axis = -1) # mean over all samples B, then get class with argmax
+            assert y_hat.shape[0] == N
+            assert y_hat.size == N
+            #
+            y_argmax = y.argmax(axis = -1)
+            assert y_argmax.shape[0] == N
+            assert y_argmax.size == N
+            #
+            acc.append((y_hat == y_argmax).mean())
         return acc
 
 
