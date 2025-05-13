@@ -34,6 +34,7 @@ def parse_args():
     parser.add_argument("--n_values", nargs="+", type=int, default=[1, 10, 20], 
                         help="List of values for the number of mixture components (N_mixture).")
     parser.add_argument("--exp_name", type=str, default="", help="Name for the parent folder of the experiment.")
+    parser.add_argument("--plot_iter", type=int, default=10000, help="When to plot")
 
     # parser.add_argument("--nf", action="store_true", help="Optim normalizing flow")
     parser.add_argument("--full", action="store_true", help="Optim full BW")
@@ -61,7 +62,7 @@ def main(args):
     n_samples, d = dataset_train[0].shape
 
     # vgmm_sample_boule = 1 * np.sqrt(d) 
-    vgmm_sample_boule = 20
+    vgmm_sample_boule = 10
     vgmm_scale_cov  =  10
 
 
@@ -132,7 +133,8 @@ def main(args):
         np.save( f"{folder_name}/N{N_mixture}/vgmm_mean.npy", vi.vgmm.means)
         np.save( f"{folder_name}/N{N_mixture}/vgmm_cov.npy", vi.vgmm.covariances)
 
-        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=10000, gen_noise=True, compute_kl=args.compute_kls) 
+        plot_iter = args.plot_iter
+        vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
         folder_xp = os.path.join(folder_name, f"N{N_mixture}", "ibw")
         os.makedirs(folder_xp, exist_ok=True)
 
@@ -155,7 +157,7 @@ def main(args):
 
         #### BASIC OPTIM  MD
 
-        vi.optimize(bw = False, md  = True, lin = False,  means_only=False, plot_iter=10000, gen_noise=True, compute_kl=args.compute_kls) 
+        vi.optimize(bw = False, md  = True, lin = False,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
         folder_xp = os.path.join(folder_name, f"N{N_mixture}", "md")
         os.makedirs(folder_xp, exist_ok=True)
 
@@ -172,7 +174,7 @@ def main(args):
 
 
             #### BASIC OPTIM  BW FULL 
-            vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=10000, gen_noise=True, compute_kl=args.compute_kls) 
+            vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
             folder_xp = os.path.join(folder_name, f"N{N_mixture}", "bw")
             os.makedirs(folder_xp, exist_ok=True)
 
@@ -188,7 +190,7 @@ def main(args):
 
 
             #### BASIC OPTIM  LIN
-            vi.optimize(bw = False, md  = False, lin = True,  means_only=False, plot_iter=10000, gen_noise=True, compute_kl=args.compute_kls) 
+            vi.optimize(bw = False, md  = False, lin = True,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
             folder_xp = os.path.join(folder_name, f"N{N_mixture}", "lin")
             os.makedirs(folder_xp, exist_ok=True)
 
