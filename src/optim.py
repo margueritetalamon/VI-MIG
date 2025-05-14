@@ -42,7 +42,10 @@ class VI_GMM:
         self.n_iterations = n_iterations
         self.learning_rate = learning_rate
         self.kls = []
-        self.rmse = []
+        self.rmse_train = []
+        self.rmse_test = []
+        self.log_likelihood_train = []
+        self.log_likelihood_test = []
         self.BKL = BKL
         self.BG = BG
         self.GM = []
@@ -95,9 +98,7 @@ class VI_GMM:
 
 
         start = time.time()
-        for _ in tqdm.tqdm(range(self.n_iterations), leave = False):
-
-            
+        for iter in tqdm.tqdm(range(self.n_iterations), leave = False):
             grad_means, grad_covs = self.vgmm.compute_grads(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
 
             
@@ -147,37 +148,74 @@ class VI_GMM:
             self.vgmm.update(new_means, new_epsilons)
 
             # self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
-            if _ % compute_kl == 0:
+            if iter % compute_kl == 0:
                 self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
-            if _ % plot_iter == 0:
+            if iter % plot_iter == 0:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
                 B = 1000
                 vi_samples = self.vgmm.sample(B)
                 if self.target.name in ["linreg", "linreg_bnn"]:
-                    # rmse = self.target.model.compute_rmse(vi_samples, self.target.model.X, self.target.model.y)
-                    # '''
                     X_ = torch.from_numpy(self.target.model.X)
-                    res = np.zeros_like(self.target.model.y)
+                    y_ = torch.from_numpy(self.target.model.y)
+                    res_train = np.zeros_like(self.target.model.y)
+                    lll_train = 0
+                    #
+                    X_test_ = torch.from_numpy(self.target.model.X_test)
+                    y_test_ = torch.from_numpy(self.target.model.y_test)
+                    res_test = np.zeros_like(self.target.model.y_test)
+                    lll_test = 0
+                    #
+                    sigma = self.target.model.sigma
                     for i in range(B):
                         theta = vi_samples[i]
                         theta_ = torch.from_numpy(theta)
                         self.target.model.neural_network.set_weights_from_vector(theta_)
                         with torch.no_grad():
-                            y_hat_ = self.target.model.neural_network.forward(X_).squeeze()
-                            res += y_hat_.numpy()
-                    res /= B
-                    diff = res - self.target.model.y
-                    rmse = np.sqrt(diff.dot(diff) / len(diff))
-                    # '''
-                    self.rmse.append(rmse)
-                    print(f"RMSE: ", rmse)
+                            y_hat_train_ = self.target.model.neural_network.forward(X_).squeeze()
+                            diff_train_ = y_ - y_hat_train_
+                            lll_train += ((-torch.dot(diff_train_, diff_train_) / (2 * sigma) - torch.log(torch.tensor(2 * np.pi * sigma))/2).sum()).numpy()
+                            res_train += y_hat_train_.numpy()
+                            #
+                            y_hat_test_ = self.target.model.neural_network.forward(X_test_).squeeze()
+                            diff_test_ = y_test_ - y_hat_test_
+                            lll_test += ((-torch.dot(diff_test_, diff_test_) / (2 * sigma) - torch.log(torch.tensor(2 * np.pi * sigma))/2).sum()).numpy()
+                            res_test += y_hat_test_.numpy()
+                    res_train /= B
+                    lll_train /= B
+                    res_test /= B
+                    lll_test /= B
+                    #
+                    diff_train = res_train - self.target.model.y
+                    diff_test = res_test - self.target.model.y_test
+                    #
+                    rmse_train = np.sqrt(diff_train.dot(diff_train) / len(diff_train))
+                    rmse_test = np.sqrt(diff_test.dot(diff_test) / len(diff_test))
+                    #
+                    self.rmse_train.append(rmse_train)
+                    self.rmse_test.append(rmse_test)
+                    print(f"RMSE train: ", rmse_train)
+                    print(f"RMSE test: ", rmse_test)
+                    #
+                    self.log_likelihood_train.append(lll_train)
+                    self.log_likelihood_test.append(lll_test)
+                    print(f"Log likelihood train: ", lll_train)
+                    print(f"Log likelihood test: ", lll_test)
                 elif self.target.name in ["logreg", "mlogreg"]:
                     N, _ = self.target.model.X.shape
                     X_ = torch.from_numpy(self.target.model.X)
+                    y_ = torch.from_numpy(self.target.model.y)
+                    #
+                    N_test, _ = self.target.model.X_test.shape
+                    X_test_ = torch.from_numpy(self.target.model.X_test)
+                    y_test_ = torch.from_numpy(self.target.model.y_test)
+                    #
                     K = self.target.model.n_classes
-                    probs = np.zeros((B, N, K))
+                    probs_train = np.zeros((B, N, K))
+                    probs_test = np.zeros((B, N_test, K))
+                    lll_train = 0
+                    lll_test = 0
                     for i in range(B):
                         theta = vi_samples[i]
                         theta_ = torch.from_numpy(theta)
@@ -185,21 +223,46 @@ class VI_GMM:
                         nn.set_weights_from_vector(theta_)
                         # forward
                         with torch.no_grad():
-                            probs_ = nn.forward(X_) # logits come from softmax of nn
-                            probs[i] = probs_.numpy()
+                            probs_train_ = nn.forward(X_) # logits come from softmax of nn
+                            lll_train += (((y_ * torch.log(torch.clip(probs_train_, min=1e-3))).sum(dim = 1)).sum()).numpy()
+                            probs_train[i] = probs_train_.numpy()
+                            #
+                            probs_test_ = nn.forward(X_test_)
+                            lll_test += (((y_test_ * torch.log(torch.clip(probs_test_, min=1e-3))).sum(dim = 1)).sum()).numpy()
+                            probs_test[i] = probs_test_.numpy()
+                    lll_train /= B
+                    lll_test /= B
 
-                    y_hat = probs.mean(axis = 0).argmax(axis = -1) # mean over all samples B, then get class with argmax
-                    assert y_hat.shape[0] == N
-                    assert y_hat.size == N
+                    y_hat_train = probs_train.mean(axis = 0).argmax(axis = -1) # mean over all samples B, then get class with argmax
+                    assert y_hat_train.shape[0] == N
+                    assert y_hat_train.size == N
                     #
                     y = self.target.model.y.argmax(axis = -1)
                     assert y.shape[0] == N
                     assert y.size == N
                     #
-                    acc = (y_hat == y).mean()
-                    self.rmse.append(acc)
-                    print(f"Mean accuracy: ", acc)
-            if _ % plot_iter == 0 and self.target.name in ["linreg", "linreg_bnn"]:
+                    acc_train = (y_hat_train == y).mean()
+                    self.rmse_train.append(acc_train)
+                    self.log_likelihood_train.append(lll_train)
+                    print(f"Mean train accuracy: ", acc_train)
+                    ##
+                    ##
+                    y_hat_test = probs_test.mean(axis = 0).argmax(axis = -1) # mean over all samples B, then get class with argmax
+                    assert y_hat_test.shape[0] == N_test
+                    assert y_hat_test.size == N_test
+                    #
+                    y_test = self.target.model.y_test.argmax(axis = -1)
+                    assert y_test.shape[0] == N_test
+                    assert y_test.size == N_test
+                    #
+                    acc_test = (y_hat_test == y_test).mean()
+                    self.rmse_test.append(acc_test)
+                    self.log_likelihood_test.append(lll_test)
+                    print(f"Mean test accuracy: ", acc_test)
+
+            # Plot for linreg - for debug purposes
+            '''
+            if iter % plot_iter == 0 and self.target.name in ["linreg", "linreg_bnn"] and iter > 0:
                 B = 10000
                 vi_samples = self.vgmm.sample(B)
                 X_ = torch.from_numpy(self.target.model.X)
@@ -217,6 +280,7 @@ class VI_GMM:
                 plt.plot(self.target.model.y, label = "real")
                 plt.legend()
                 plt.savefig("optim.pdf")
+            '''
 
         self.time = time.time() - start
 
@@ -239,7 +303,13 @@ class VI_GMM:
             np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
 
         np.save(f"{folder}/kls.npy", self.kls)
-        np.save(f"{folder}/rmse.npy", self.rmse)
+        #
+        np.save(f"{folder}/rmse_train.npy", self.rmse_train)
+        np.save(f"{folder}/rmse_test.npy", self.rmse_test)
+        #
+        np.save(f"{folder}/log_likelihood_train.npy", self.log_likelihood_train)
+        np.save(f"{folder}/log_likelihood_test.npy", self.log_likelihood_test)
+        #
         np.save(f"{folder}/time.npy", self.time)
 
         
