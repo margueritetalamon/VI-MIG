@@ -406,8 +406,8 @@ class IGMM(GMM):
     def update(self, new_means, new_epsilons):
 
         
-        self.optimized_means.append(new_means)
-        self.optimized_epsilons.append(new_epsilons)
+        # self.optimized_means.append(new_means)
+        # self.optimized_epsilons.append(new_epsilons)
 
         new_covs = (new_epsilons[:,None,None] * np.eye(self.dim))
         # self.optimized_covs.append(new_covs)

@@ -154,7 +154,7 @@ class VI_GMM:
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
                 B = 1000
-                vi_samples = self.vgmm.sample(B, t=-1)
+                vi_samples = self.vgmm.sample(B)
                 if self.target.name in ["linreg", "linreg_bnn"]:
                     # rmse = self.target.model.compute_rmse(vi_samples, self.target.model.X, self.target.model.y)
                     # '''
@@ -201,7 +201,7 @@ class VI_GMM:
                     print(f"Mean accuracy: ", acc)
             if _ % plot_iter == 0 and self.target.name in ["linreg", "linreg_bnn"]:
                 B = 10000
-                vi_samples = self.vgmm.sample(B, t=-1)
+                vi_samples = self.vgmm.sample(B)
                 X_ = torch.from_numpy(self.target.model.X)
                 res = np.zeros_like(self.target.model.y)
                 for i in range(B):
