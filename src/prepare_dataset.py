@@ -9,7 +9,7 @@ import pandas as pd
 
 import os
 
-def prepare_dataset(name, train_ratio = 0.6, mnist_digits = None, mnist_reduced = False):
+def prepare_dataset(name, train_ratio = 0.6, mnist_digits = None, mnist_reduced = False, mnist_super_reduced = False):
     if name == "breast_cancer":
 
 
@@ -79,14 +79,17 @@ def prepare_dataset(name, train_ratio = 0.6, mnist_digits = None, mnist_reduced 
         y = encoder.fit_transform(y.reshape(-1, 1))
 
         # Reshape the flattened images to 28x28
-        if mnist_reduced:
+        if mnist_reduced or mnist_super_reduced:
             X_reshaped = X.reshape(-1, 28, 28)
 
             # Select every other pixel in both dimensions (reducing to 14x14)
             X_reduced = X_reshaped[:, ::2, ::2]
-
-            # Flatten the reduced images back to 1D arrays (196 dimensions)
-            X_reduced_flat = X_reduced.reshape(-1, 14*14)
+            if mnist_super_reduced:
+                X_reduced = X_reduced[:, ::2, ::2]
+                X_reduced_flat = X_reduced.reshape(-1, 7*7)
+            else:
+                # Flatten the reduced images back to 1D arrays (196 dimensions)
+                X_reduced_flat = X_reduced.reshape(-1, 14*14)
 
             X = X_reduced_flat
 
