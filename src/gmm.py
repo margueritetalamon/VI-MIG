@@ -9,7 +9,7 @@ import math
 
 
 class GMM: 
-    def __init__(self, variational = True, mode ="full", weights = None, means = None, covs = None, n_components = 3, d = 2, s = 10, scale = 2):
+    def __init__(self, variational = True, mode ="full", weights = None, means = None, covs = None, n_components = 3, d = 2, s = 10, scale = 2, seed = None):
 
         self.variational = variational
         self.mode = mode
@@ -17,7 +17,7 @@ class GMM:
         self.num_stab = 0
 
       
-        self.init_gmm(weights , means , covs , n_components, d = d, s = s, scale = scale)
+        self.init_gmm(weights , means , covs , n_components, d = d, s = s, scale = scale, seed = seed)
 
 
         if self.variational:
@@ -31,16 +31,16 @@ class GMM:
 
 
     
-    def init_gmm(self, weights = None, means = None, covs = None, n_components = 3 , d = 2, s = 10, scale = 2):
+    def init_gmm(self, weights = None, means = None, covs = None, n_components = 3 , d = 2, s = 10, scale = 2, seed = None):
         
         if means is not None: 
             self.n_components, self.dim = means.shape
         else:
             self.n_components, self.dim = n_components, d
         
-        self.weights = weights if weights is not None else self.generate_random_weights(self.n_components)
-        self.means = means if means is not None else self.generate_random_means(s)
-        self.covariances = covs if covs is not None else self.generate_random_covs(self.n_components, self.dim, self.mode, scale, self.variational)
+        self.weights = weights if weights is not None else self.generate_random_weights(self.n_components, seed = seed)
+        self.means = means if means is not None else self.generate_random_means(s, seed = seed)
+        self.covariances = covs if covs is not None else self.generate_random_covs(self.n_components, self.dim, self.mode, scale, self.variational, seed = seed)
         self.invcov = np.array([np.linalg.inv(cov) for cov in self.covariances])
 
         if self.mode == "iso":
@@ -51,17 +51,20 @@ class GMM:
 
 
 
-    def generate_random_means(self, s):
-        return np.random.uniform(low=-s, high=s, size=(self.n_components, self.dim))
+    def generate_random_means(self, s, seed = None):
+        rng = np.random.RandomState(seed=seed)
+
+        return rng.uniform(low=-s, high=s, size=(self.n_components, self.dim))
 
     @staticmethod
-    def generate_random_covs(n, d, mode, scale, variational = False):
+    def generate_random_covs(n, d, mode, scale, variational = False, seed = None):
         covs = []
-  
+
+        rng = np.random.RandomState(seed=seed)
 
         for _ in range(n):
             if mode == "full":
-                A = np.random.randn(d, d)
+                A = rng.randn(d, d)
                 cov = A @ A.T  # Ensures positive semi-definiteness
                 cov /= np.max(np.abs(cov))  # Normalize to prevent large values
                 cov *= scale
@@ -69,7 +72,7 @@ class GMM:
                 cov += np.eye(d) * 1e-6 
 
             elif mode == "diag":
-                diag = np.random.uniform(1, 10, d) 
+                diag = rng.uniform(1, 10, d) 
                 cov = np.diag(diag)
                 cov /= np.max(np.abs(cov))  
                 cov *= scale
@@ -78,7 +81,7 @@ class GMM:
                 if variational:
                     coef = scale
                 else:
-                    coef = np.random.randn(1)**2 + scale
+                    coef = rng.randn(1)**2 + scale
                 cov = coef*np.eye(d)
             else:
                 raise ValueError("Covariance type not defined, please choose between : ['diag', 'iso', 'full']")
@@ -88,12 +91,13 @@ class GMM:
         
         return np.array(covs)
 
-    def generate_random_weights(self, n):
+    def generate_random_weights(self, n, seed = None):
+        rng = np.random.RandomState(seed=seed)
 
         if self.variational:
             weights = np.ones((n,))/n
         else:
-            weights = np.random.randint(low = 1, high = n*2, size = (n,))
+            weights = rng.randint(low = 1, high = n*2, size = (n,))
             weights = weights /  weights.sum()
 
         return weights
@@ -222,14 +226,17 @@ class GMM:
 
 
     
-    def compute_marginals(self,fig = None,  axes = None, t = -1,  bounds = (-20,20), grid_size =  100, ncols = 10, label = None, color = "black"):
+    def compute_marginals(self,fig = None,  axes = None, t = -1,  bounds = (-20,20), grid_size =  100, ncols = 10, label = None, color = "black", lw = 2):
         x_grid = np.linspace(bounds[0], bounds[1], grid_size)
 
         nrows = math.ceil(self.dim / ncols)
 
         if self.variational:
             means = self.optimized_means[t]
-            covs = self.optimized_epsilons[t][:, None, None] * np.eye(self.dim)[None]
+            if self.mode == "iso":
+                covs = self.optimized_epsilons[t][:, None, None] * np.eye(self.dim)[None]
+            else:
+                covs = self.optimized_covs[t]
         else:
             means = self.means
             covs = self.covariances
@@ -255,7 +262,7 @@ class GMM:
             ]
             Z_target = (np.array(target_marginals) * self.weights[..., None]).sum(axis = 0)
 
-            axes[j].plot(x_grid, Z_target, label=label, color=color, linestyle="--", linewidth=3)
+            axes[j].plot(x_grid, Z_target, label=label, color=color, linestyle="--", linewidth=lw)
             axes[j].set_yticks([])
 
         handles, plot_labels = axes[0].get_legend_handles_labels()
@@ -269,7 +276,7 @@ class GMM:
         
 
     
-    def plot_estimated(self, bound = 20, grid_size = 100):
+    def plot_estimated(self, grid_size = 100,  x1 = -10, x2 = 10, y1=-10, y2 = 10):
 
         fig, ax = plt.subplots()
 
@@ -281,24 +288,24 @@ class GMM:
                 ax.contour(self.contours[0],self.contours[1], self.contours[2], levels=10, cmap="viridis")
 
             else:
-                x = np.linspace(-bound, bound, grid_size)
-                y = np.linspace(-bound, bound, grid_size)
+                x = np.linspace(x1, x2, grid_size)
+                y = np.linspace(y1, y2, grid_size)
                 X, Y = np.meshgrid(x, y)
                 pos = np.dstack((X, Y))[:, :, None, :]
                 Z = self.prob(pos)
                 Z = Z[:,0,:]
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
-            ax.set_aspect('equal')
+            # ax.set_aspect('equal')
 
 
-        elif self.dim == 1:
-            x = np.linspace(-bound, bound, grid_size)
-            y = self.prob(x[:,None, None])
+        # elif self.dim == 1:
+        #     x = np.linspace(-bound, bound, grid_size)
+        #     y = self.prob(x[:,None, None])
             
-            ax.plot(x, y)
+        #     ax.plot(x, y)
 
-        return ax
+        return fig, ax
 
     
 
@@ -402,12 +409,12 @@ class IGMM(GMM):
         self.optimized_epsilons.append(new_epsilons)
 
         new_covs = (new_epsilons[:,None,None] * np.eye(self.dim))
-        # self.optimized_covs.append(new_covs)
+        self.optimized_covs.append(new_covs)
 
 
         self.epsilons = new_epsilons
         self.means = new_means
-        # self.covariances = new_covs
+        self.covariances = new_covs
 
         self.gaussians = dist.MultivariateNormal(torch.as_tensor(self.means), covariance_matrix=torch.as_tensor(new_covs)) 
 
@@ -604,6 +611,7 @@ class FGMM(GMM):
         grad_log_vgmm = rearrange(grad_log_vgmm , "(n b) d -> n b d", b = B)
 
         grad_means = (grad_log_vgmm - grad_log_pi).mean(axis = 1)/self.n_components
+
 
 
         if optim_epsilon:  ## TODO grad covs

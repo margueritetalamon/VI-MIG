@@ -214,7 +214,7 @@ class MultiClassLogReg(LogReg):
 
 
         self.prior_mean = np.zeros(self.dim)
-        self.prior_eps  = 1
+        self.prior_eps  = 10
 
 
         self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))

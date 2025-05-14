@@ -94,10 +94,14 @@ class VI_GMM:
 
 
         start = time.time()
+        np.random.seed(np.random.randint(10e5))
+        
         for _ in tqdm.tqdm(range(self.n_iterations), leave = False):
 
             
             grad_means, grad_covs = self.vgmm.compute_grads(self.target.model, noise_grads,  B = self.BG, optim_epsilon = not means_only)
+            # if _ == 0:
+            #     print("GRAD COV", grad_covs)
 
             
             if save_grads :
@@ -115,12 +119,15 @@ class VI_GMM:
             if bw: 
                 if self.mode == "iso":
                     new_epsilons = (1 - (2*self.vgmm.n_components*learning_rate/self.dim)  * grad_covs)**2 * self.vgmm.epsilons 
-                
+                    # if _ == 0:
+                    #     print("UPDATE IBW", new_epsilons)
 
                 elif self.mode == "full":
 
                     M = np.eye(self.dim) - 2*self.vgmm.n_components*learning_rate*grad_covs
                     new_epsilons = M * self.vgmm.covariances * M 
+                    # if _ == 0:
+                    #     print("UPDATE BW", new_epsilons)
  
             elif md:
 
@@ -136,7 +143,7 @@ class VI_GMM:
 
                     
             elif means_only:
-                new_epsilons = None
+                new_epsilons = self.vgmm.epsilons
 
             else:
                 raise ValueError("No optim performed.")
@@ -146,13 +153,19 @@ class VI_GMM:
             self.vgmm.update(new_means, new_epsilons)
 
             # self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
-            if _ % compute_kl == 0:
+            if _ % compute_kl == 0 or _ == self.n_iterations -1:
                 self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
             if _ % plot_iter == 0:
 
                 print("LR" , learning_rate)
                 print("KL ",self.kls[-1])
+                if  "linreg" in self.target.name :
+                    vi_samples = self.vgmm.sample(B = 1000, t = -1)
+                    print("FINAL LLL", self.target.model.log_likelihood(vi_samples).mean())
+                    print("FINAL RMSE",((self.target.model.neural_network.forward(params = vi_samples, x = self.target.model.X_test).mean(axis = 0) - self.target.model.y_test)**2).mean())
+
+
 
         self.time = time.time() - start
 
@@ -249,6 +262,7 @@ class VI_GMM:
        
                 lll = self.target.model.evaluate_lll(self.vgmm,noise = noise, component_indices=component_indices, jump = 5, split = split ).mean(axis = 1 )
                 np.save(f"{folder_xp}/lll_{split}.npy", lll)
+            print("ACCURACY", acc[-1])
 
 
         elif self.target.name == "linreg":

@@ -15,14 +15,14 @@ from scipy.stats import norm
 class Target:
     def __init__(self, name = "gmm",
                 mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
-                dataset_train = None, dataset_test = None,  d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
+                dataset_train = None, dataset_test = None,  d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, prior_mean = None, prior_eps= None, ### logreg traget param 
                 n_classes = 3, ### multiclass logreg traget param 
-                hidden_units = 10, sigma = 1, n_layers = 1): ### lin reg param 
+                hidden_units = 10, sigma = 100, n_layers = 1, seed = None): ### lin reg param 
 
         
         self.name = name 
         if self.name == "gmm":
-            self.model = GMM(variational=False, mode = mode, weights = weights, means = means, covs=covariances, n_components = n_components, d = d, s = s, scale = scale)
+            self.model = GMM(variational=False, mode = mode, weights = weights, means = means, covs=covariances, n_components = n_components, d = d, s = s, scale = scale, seed = seed)
         
 
         elif self.name == "logreg":
@@ -52,7 +52,7 @@ class Target:
         self.contours = None
 
     
-    def plot(self, bounds = (-20, 20), grid_size = 100, color = "black", label = None, ncols = 10):
+    def plot(self, x1,x2,y1,y2, grid_size = 100, color = "black", label = None, ncols = 10, lw = 4):
         
 
 
@@ -64,8 +64,8 @@ class Target:
                 ax.contour(self.contours[0],self.contours[1], self.contours[2], levels=10, cmap="viridis")
 
             else:
-                x = np.linspace(bounds[0], bounds[1], grid_size)
-                y = np.linspace(bounds[0], bounds[1], grid_size)
+                x = np.linspace(x1, x2, grid_size)
+                y = np.linspace(y1, y2, grid_size)
                 X, Y = np.meshgrid(x, y)
                 pos = np.dstack((X, Y))[:, :, None, :]
                 if self.name in ["funnel",  "logreg"]:
@@ -86,20 +86,21 @@ class Target:
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
 
-        elif self.dim == 1:
-            fig, ax = plt.subplots()
-            x = np.linspace(bounds[0], bounds[1], grid_size)
-            y = self.model.prob(x[:,None, None])
+        # elif self.dim == 1:
+        #     fig, ax = plt.subplots()
+        #     x = np.linspace(bounds[0], bounds[1], grid_size)
+        #     y = self.model.prob(x[:,None, None])
             
-            ax.plot(x, y)
+        #     ax.plot(x, y)
 
 
         else:
 
             if not self.name == "gmm": 
                 return 
+            bounds = (-10,10)
             
-            fig, ax = self.model.compute_marginals(fig = None, axes = None, bounds = bounds, grid_size=grid_size, ncols=ncols , label = label, color=color)
+            fig, ax = self.model.compute_marginals(fig = None, axes = None, bounds = bounds, grid_size=grid_size, ncols=ncols , label = label, color=color, lw = lw)
 
 
         return fig, ax
