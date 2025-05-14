@@ -9,8 +9,7 @@ import pandas as pd
 
 import os
 
-def prepare_dataset(name, train_ratio = 0.6):
- 
+def prepare_dataset(name, train_ratio = 0.6, mnist_digits = None, mnist_reduced = False):
     if name == "breast_cancer":
 
 
@@ -63,15 +62,35 @@ def prepare_dataset(name, train_ratio = 0.6):
             X = mnist.data  # Images are already flattened as 784-dimensional vectors
             y = mnist.target.astype(np.int8)  # Convert labels to int
             # Normalize pixel values to [0, 1]
-            X = X / 255.0
             # One-hot encode the labels
-            encoder = OneHotEncoder(sparse_output=False)
-            y = encoder.fit_transform(y.reshape(-1, 1))
             os.mkdir("mnist")
             np.save("mnist/X.npy", X)
             np.save("mnist/y.npy", y)
 
-        N, d = X.shape
+        # Filter to keep only digits 1 and 4
+        if len(mnist_digits) > 0:
+            mask = np.isin(y, mnist_digits)
+            X = X[mask]
+            y = y[mask]
+            X = X / 255.0
+
+        # 1-hot encode the labels
+        encoder = OneHotEncoder(sparse_output=False)
+        y = encoder.fit_transform(y.reshape(-1, 1))
+
+        # Reshape the flattened images to 28x28
+        if mnist_reduced:
+            X_reshaped = X.reshape(-1, 28, 28)
+
+            # Select every other pixel in both dimensions (reducing to 14x14)
+            X_reduced = X_reshaped[:, ::2, ::2]
+
+            # Flatten the reduced images back to 1D arrays (196 dimensions)
+            X_reduced_flat = X_reduced.reshape(-1, 14*14)
+
+            X = X_reduced_flat
+
+        N, _ = X.shape
         indices = np.random.RandomState(seed=42).permutation(N)
         X = X[indices]
         y = y[indices]

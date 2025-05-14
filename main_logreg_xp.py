@@ -1,7 +1,7 @@
 from src.prepare_dataset import prepare_dataset
 from src.optim import VI_GMM
 from src.target import Target
-
+from typing import List
 
 import json
 import argparse
@@ -30,6 +30,8 @@ def parse_args():
     parser.add_argument("--B_gradients", type=int, default=100, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--compute_kls", type=int, default=1000, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--hidden_layers", nargs="+", type=int, default=[10], help="BNN hidden layers")
+    parser.add_argument("--mnist_digits", nargs="+", type=int, default=[], help="Which digits of MNIST to select (no digits = all of them)")
+    parser.add_argument("--mnist_reduced", action="store_true", help="Select every other pixel in MNIST (28x28 -> 14x14 pixels)")
     parser.add_argument("--B_kls", type=int, default=1000, help="Batch size for Monte Carlo estimation.")
     parser.add_argument("--n_iter", type=int, default=1000, help="Number of iterations")
     parser.add_argument("--nxp", type=int, default=1, help="Number of time to do the same xp")
@@ -59,7 +61,7 @@ def main(args):
     folder_name = os.path.join(exp_name, current_datetime)
 
    
-    dataset_train , dataset_test = prepare_dataset(args.dataset_name, args.train_ratio)
+    dataset_train , dataset_test = prepare_dataset(args.dataset_name, args.train_ratio, args.mnist_digits, args.mnist_reduced)
 
     n_samples, d = dataset_train[0].shape
 
