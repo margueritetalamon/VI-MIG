@@ -110,8 +110,9 @@ def main(args):
 
     for N_mixture in n_values:  
         try:
-            #### BASIC OPTIM  BW ISO 
-            print("Creating VIGMM")
+            #### BASIC OPTIM  BW ISO
+            
+            print("Creating VIGMM IBW")
             vi = VI_GMM(target, mode = "iso", learning_rate= args.lr, n_iterations= args.n_iter,
                         n_components = N_mixture, scale = vgmm_scale_cov, BG = args.B_gradients, 
                         BKL = args.B_kls, s = vgmm_sample_boule) 
@@ -125,11 +126,11 @@ def main(args):
             np.save( f"{folder_name}/N{N_mixture}/vgmm_cov.npy", vi.vgmm.covariances)
 
             plot_iter = args.plot_iter
-            print("Optimizing...")
+            print("Optimizing... IBW")
             vi.optimize(bw = True, md  = False, lin = False,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
             folder_xp = os.path.join(folder_name, f"N{N_mixture}", "ibw")
             os.makedirs(folder_xp, exist_ok=True)
-            print("Done optimizing.")
+            print("Done optimizing IBW.")
 
             vi.save(folder_xp)
 
@@ -140,13 +141,16 @@ def main(args):
 
 
             #### BASIC OPTIM  MD
+            print("Creating VIGMM MD")
             vi = VI_GMM(target, mode = "iso", learning_rate= args.lr, n_iterations= args.n_iter,
                         n_components = N_mixture, scale = vgmm_scale_cov, BG = args.B_gradients, 
                         BKL = args.B_kls, s = vgmm_sample_boule) 
 
+            print("Optimizing MD")
             vi.optimize(bw = False, md  = True, lin = False,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
             folder_xp = os.path.join(folder_name, f"N{N_mixture}", "md")
             os.makedirs(folder_xp, exist_ok=True)
+            print("Done optimizing MD")
 
             vi.save(folder_xp)
             vi.evaluate(folder_xp=folder_xp, noise = noise, component_indices=component_indices)
@@ -170,14 +174,18 @@ def main(args):
 
             #### LIN
             if args.lin: 
+                print("Creating VIGMM lin")
                 vi = VI_GMM(target, mode = "iso", learning_rate= args.lr, n_iterations= args.n_iter,
                             n_components = N_mixture, scale = vgmm_scale_cov, BG = args.B_gradients, 
                             BKL = args.B_kls, s = vgmm_sample_boule, means = previous_init) 
+                print("Done")
 
                 #### BASIC OPTIM  LIN
+                print("Optimizing lin")
                 vi.optimize(bw = False, md  = False, lin = True,  means_only=False, plot_iter=plot_iter, gen_noise=True, compute_kl=args.compute_kls) 
                 folder_xp = os.path.join(folder_name, f"N{N_mixture}", "lin")
                 os.makedirs(folder_xp, exist_ok=True)
+                print("Done optimizing lin.")
 
                 vi.save(folder_xp)  
                 vi.evaluate(folder_xp=folder_xp, noise = noise, component_indices=component_indices)
