@@ -1,4 +1,4 @@
-from sklearn.datasets import load_breast_cancer, fetch_openml
+from sklearn.datasets import load_breast_cancer, fetch_openml, fetch_covtype
 from sklearn.preprocessing import OneHotEncoder
 from ucimlrepo import fetch_ucirepo 
 import numpy as np
@@ -38,14 +38,38 @@ def prepare_dataset(name, train_ratio = 0.6, mnist_digits = None, mnist_reduced 
         y = y.values
 
     if name == "covertype":
+        if os.path.exists("covtype/X.npy") and os.path.exists("covtype/y.npy"):
+            X = np.load("covtype/X.npy")
+            y = np.load("covtype/y.npy")
+        else:
+            covertype = fetch_covtype()
+            X = covertype.data
+            y = covertype.target - 1 ##  to 1,2.., K to 0,1,2, K-1
+            os.mkdir("covtype")
+            np.save("covtype/X.npy", X)
+            np.save("covtype/y.npy", y)
 
-        covertype = fetch_ucirepo(id=31) 
-        
-        X = covertype.data.features.values
-        y = covertype.data.targets.values - 1 ##  to 1,2.., K to 0,1,2, K-1
+        # 1-hot encode the labels
+        encoder = OneHotEncoder(sparse_output=False)
+        y = encoder.fit_transform(y.reshape(-1, 1))
+
+        N, _ = X.shape
+        indices = np.random.RandomState(seed=42).permutation(N)
+        X = X[indices]
+        y = y[indices]
+        N_train = int(train_ratio * N)
+
+        X_train = X[:N_train]
+        y_train = y[:N_train]
+
+        X_test = X[N_train:]
+        y_test = y[N_train:]
+
+        train_dataset = (X_train, y_train)
+        test_dataset = (X_test, y_test)
+        return train_dataset, test_dataset
 
     if name == "boston":
-
         data_url = "http://lib.stat.cmu.edu/datasets/boston"
         raw_df = pd.read_csv(data_url, sep="\s+", skiprows=22, header=None).dropna(axis = 0)
         y = raw_df.values[:, 2]
