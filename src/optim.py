@@ -207,9 +207,14 @@ class VI_GMM:
                     X_ = torch.from_numpy(self.target.model.X)
                     y_ = torch.from_numpy(self.target.model.y)
                     #
-                    N_test, _ = self.target.model.X_test.shape
-                    X_test_ = torch.from_numpy(self.target.model.X_test)
-                    y_test_ = torch.from_numpy(self.target.model.y_test)
+                    M_test = 1000
+                    indices = np.random.permutation(len(self.target.model.X_test))[:M_test]
+                    X_test = self.target.model.X_test[indices]
+                    y_test = self.target.model.y_test[indices]
+                    N_test, _ = X_test.shape
+                    assert N_test == M_test
+                    X_test_ = torch.from_numpy(X_test)
+                    y_test_ = torch.from_numpy(y_test)
                     #
                     K = self.target.model.n_classes
                     probs_train = np.zeros((B, N, K))
