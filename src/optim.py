@@ -267,9 +267,13 @@ class VI_GMM:
                     print(f"Log likelihood train: ", lll_train)
                     print(f"Log likelihood test: ", lll_test)
                 elif self.target.name in ["logreg", "mlogreg"]:
-                    N, _ = self.target.model.X.shape
-                    X_ = torch.from_numpy(self.target.model.X)
-                    y_ = torch.from_numpy(self.target.model.y)
+                    M_train = min(1000, self.target.model.X.shape[0])
+                    indices = np.random.permutation(len(self.target.model.X))[:M_train]
+                    X = self.target.model.X[indices]
+                    y = self.target.model.y[indices]
+                    N, _ = X.shape
+                    X_ = torch.from_numpy(X)
+                    y_ = torch.from_numpy(y)
                     #
                     M_test = min(1000, self.target.model.X_test.shape[0])
                     indices = np.random.permutation(len(self.target.model.X_test))[:M_test]
@@ -306,7 +310,7 @@ class VI_GMM:
                     assert y_hat_train.shape[0] == N
                     assert y_hat_train.size == N
                     #
-                    y = self.target.model.y.argmax(axis = -1)
+                    y = y.argmax(axis = -1)
                     assert y.shape[0] == N
                     assert y.size == N
                     #
