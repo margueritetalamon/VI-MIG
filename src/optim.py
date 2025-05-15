@@ -207,7 +207,7 @@ class VI_GMM:
                     X_ = torch.from_numpy(self.target.model.X)
                     y_ = torch.from_numpy(self.target.model.y)
                     #
-                    M_test = math.min(1000, self.target.model.X_test.shape[0])
+                    M_test = min(1000, self.target.model.X_test.shape[0])
                     indices = np.random.permutation(len(self.target.model.X_test))[:M_test]
                     X_test = self.target.model.X_test[indices]
                     y_test = self.target.model.y_test[indices]
