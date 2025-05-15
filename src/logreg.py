@@ -109,6 +109,10 @@ class LogReg:
             X = self.X_test
             y = self.y_test
 
+        M = min(1000, X.shape[0])
+        # indices = np.random.permutation(len(X))[:M]
+        X = X[:M]
+        y = y[:M]
 
         logits = np.dot(X, theta.T)
         lll = (y[:,None] * logits - np.log(1 + np.exp(logits))).sum(axis =  0)
@@ -275,6 +279,11 @@ class MultiClassLogReg(LogReg):
         else:
             X = self.X_test
             y = self.y_test
+
+        M = min(1000, X.shape[0])
+        indices = np.random.permutation(len(X))[:M]
+        X = X[indices]
+        y = y[indices]
 
         B, _ = thetas.shape
         X_ = torch.from_numpy(X)
