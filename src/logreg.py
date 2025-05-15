@@ -34,7 +34,7 @@ class LogReg:
         self.prior_mean = prior_mean if prior_mean is not None else np.zeros(self.dim)
         self.prior_eps  = prior_eps if prior_eps is not None else 1
 
-        self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
+        # self.prior = multivariate_normal(self.prior_mean, self.prior_eps * np.eye(self.dim))
 
         print(f"Parameters dim = {self.dim}")
 
@@ -287,7 +287,7 @@ class MultiClassLogReg(LogReg):
             with torch.no_grad():
                 probs_ = self.neural_network.forward(X_) # logits come from softmax of nn
                 # compute lll
-                lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-3))).sum(dim = 1)).sum()
+                lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-8))).sum(dim = 1)).sum()
                 lll[i] = lll_.numpy()
         return lll
 
@@ -351,7 +351,7 @@ class MultiClassLogReg(LogReg):
             # forward
             probs_ = self.neural_network.forward(X_) # logits come from softmax of nn
             # compute lll and backward
-            lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-3))).sum(dim = 1)).sum()
+            lll_ = ((y_ * torch.log(torch.clip(probs_, min=1e-8))).sum(dim = 1)).sum()
             lll_.backward()
             # store gradient
             grad = self.neural_network.get_gradients_as_vector().numpy()
