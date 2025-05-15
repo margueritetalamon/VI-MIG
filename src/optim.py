@@ -11,6 +11,69 @@ import torch
 import torch.distributions as dist
 
 
+class Adam:
+    def __init__(self, learning_rate=0.001, beta1=0.9, beta2=0.999, epsilon=1e-8):
+        """
+        Initialize Adam optimizer
+        
+        Parameters:
+        -----------
+        learning_rate : float
+            Step size for parameter updates
+        beta1 : float
+            Exponential decay rate for first moment estimates
+        beta2 : float
+            Exponential decay rate for second moment estimates
+        epsilon : float
+            Small constant to prevent division by zero
+        """
+        self.learning_rate = learning_rate
+        self.beta1 = beta1
+        self.beta2 = beta2
+        self.epsilon = epsilon
+        self.m = None  # First moment estimate
+        self.v = None  # Second moment estimate
+        self.t = 0     # Timestep
+        
+    def update(self, params, grads):
+        """
+        Update parameters using Adam optimization
+        
+        Parameters:
+        -----------
+        params : numpy array
+            Current parameter values
+        grads : numpy array
+            Gradient of the loss with respect to params
+            
+        Returns:
+        --------
+        numpy array
+            Updated parameter values
+        """
+        # Initialize moment estimates on first call
+        if self.m is None:
+            self.m = np.zeros_like(params)
+            self.v = np.zeros_like(params)
+        
+        self.t += 1
+        
+        # Update biased first moment estimate
+        self.m = self.beta1 * self.m + (1 - self.beta1) * grads
+        
+        # Update biased second raw moment estimate
+        self.v = self.beta2 * self.v + (1 - self.beta2) * (grads ** 2)
+        
+        # Compute bias-corrected first moment estimate
+        m_hat = self.m / (1 - self.beta1 ** self.t)
+        
+        # Compute bias-corrected second raw moment estimate
+        v_hat = self.v / (1 - self.beta2 ** self.t)
+        
+        # Update parameters
+        updated_params = params - self.learning_rate * m_hat / (np.sqrt(v_hat) + self.epsilon)
+        
+        return updated_params
 
 class VI_GMM:
     def __init__(self, target , mode = "iso", n_iterations = 1000, learning_rate = 0.1, BKL = 1000, BG = 1, num_stab  = 0,  **kwargs):
@@ -38,6 +101,7 @@ class VI_GMM:
 
         self.vgmm.num_stab = self.num_stab
         self.target.model.num_stab = self.num_stab
+        self.adam = Adam(learning_rate=learning_rate)
 
         self.n_iterations = n_iterations
         self.learning_rate = learning_rate
@@ -111,8 +175,8 @@ class VI_GMM:
                 learning_rate = self.lr_linear(_)
                 # print(learning_rate)
 
-            new_means = self.vgmm.means - learning_rate * self.vgmm.n_components * grad_means
-
+            # new_means = self.vgmm.means - learning_rate * self.vgmm.n_components * grad_means
+            new_means = self.adam.update(self.vgmm.means, self.vgmm.n_components * grad_means)
             
             if bw: 
                 if self.mode == "iso":
