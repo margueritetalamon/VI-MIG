@@ -370,8 +370,8 @@ class VI_GMM:
 
     def save(self, folder):
                
-        np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
-        np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
+        np.save(f"{folder}/optimized_means.npy", self.vgmm.means)
+        np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.epsilons)
         if self.mode == "full":
             np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
 
