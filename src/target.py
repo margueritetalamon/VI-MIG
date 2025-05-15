@@ -16,8 +16,8 @@ class Target:
     def __init__(self, name = "gmm",
                 mode = "diag", means = None, covariances =  None,  weights = None, n_components = 3, ### gmm traget param 
                 dataset_train = None, dataset_test = None,  d = 2, s = 10, scale = 2, n_samples  = 100, Z = 100, meanShift = 1, cov_lg  = None, seed = 1, prior_mean = None, prior_eps= None, ### logreg traget param 
-                n_classes = 3, ### multiclass logreg traget param 
-                hidden_layers = [10], sigma = 1, n_layers = 1): ### lin reg param
+                n_classes = 3, hidden_layers = [10], batch_size = 128, ### multiclass logreg traget param 
+                 sigma = 1, n_layers = 1): ### lin reg param
 
         
         self.name = name 
@@ -36,7 +36,7 @@ class Target:
         #     self.model = LogReg_withBNN(dataset_train = dataset_train, dataset_test = dataset_test, n_samples=n_samples, d_data=d, Z = Z, meanShift=meanShift, cov =cov_lg, seed=seed, prior_eps=prior_eps, prior_mean=prior_mean )
 
         elif self.name == "mlogreg":
-            self.model = MultiClassLogReg(dataset_train  = dataset_train, dataset_test =dataset_test,  n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes, hidden_layers=hidden_layers)
+            self.model = MultiClassLogReg(dataset_train  = dataset_train, dataset_test =dataset_test,  n_samples =  n_samples, d = d, Z = Z,  meanShift=meanShift, cov =  cov_lg, seed = seed, prior_eps=prior_eps, prior_mean=prior_mean, n_classes = n_classes, hidden_layers=hidden_layers, batch_size=batch_size)
 
 
         elif self.name == "linreg":

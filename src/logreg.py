@@ -202,10 +202,11 @@ class LogReg:
 
 
 class MultiClassLogReg(LogReg):
-    def __init__(self, hidden_layers, n_classes=3, **kwargs):
+    def __init__(self, hidden_layers, n_classes=3, batch_size=128, **kwargs):
         super().__init__(**kwargs)
 
         self.name = "mlogreg"
+        self.batch_size = batch_size
 
         self.init_model(hidden_layers)
         print("Data dim: ", self.data_dim)
@@ -329,7 +330,7 @@ class MultiClassLogReg(LogReg):
     #     grad_flatten = rearrange(grad_forall_k, "B d k -> B (d k)" )
     #     return  grad_flatten
 
-    def batchized_data(self, M = 32):
+    def batchized_data(self, M):
         indices = np.random.permutation(len(self.X))[:M]
         X = self.X[indices]
         y = self.y[indices]
@@ -337,7 +338,7 @@ class MultiClassLogReg(LogReg):
 
     def gradient_log_likelihood(self, thetas):
         B, d = thetas.shape
-        X, y = self.batchized_data()
+        X, y = self.batchized_data(self.batch_size)
         X_ = torch.from_numpy(X)
         y_ = torch.from_numpy(y)
         grad_thetas = np.zeros((B, d))
