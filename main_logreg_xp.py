@@ -22,7 +22,7 @@ def parse_args():
     parser.add_argument("--d", type=int, default=10, help="Dimensionality of the data (d).")
     parser.add_argument("--target", type=str, default="gmm", help="Target type")
     parser.add_argument("--dataset_name", type=str, default="sythetic", help="Dataset name, please choose between [breast_cancer, wine, toxicity, boston and synthetic]")
-    parser.add_argument("--train_ratio", type=float, default=0.5, help="Datas training ratio")
+    parser.add_argument("--train_ratio", type=float, default=0.7, help="Datas training ratio")
     parser.add_argument("--prior_eps", type=float, default=100, help="Espilon prior")
     parser.add_argument("--lr", type=float, default=1, help="Learning rate")
     parser.add_argument("--sample_boule", type=float, default=10, help="vgmm_sample_bould")
