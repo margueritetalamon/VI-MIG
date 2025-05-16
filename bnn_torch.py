@@ -25,6 +25,7 @@ class MargArgs(tap.Tap):
     hidden_dim: int = 256
     save_interval: int = 1  # Save metrics every N epochs
     save_dir: str = "./results_mnist"  # Directory to save results
+    compile: int = 0 # Whether or not to compile the BNN
     seed: int = 42
 
 args = MargArgs().parse_args()
@@ -88,6 +89,8 @@ n_components = args.n_components
 n_samples = n_components
 
 model = IsotropicSampledMixtureNN(n_components=n_components, n_samples=n_samples, hidden_dim=args.hidden_dim)
+if args.compile:
+    model = torch.compile(model)
 lr = args.lr
 
 # Initialize metrics storage
