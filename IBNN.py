@@ -151,7 +151,20 @@ class IsotropicSampledMixtureNN(nn.Module):
         self.n_components = n_components
         self.layer1 = IsotropicSampledMixtureLinear(input_dim, hidden_dim, n_components, n_samples)
         self.layer2 = IsotropicSampledMixtureLinear(hidden_dim, output_dim, n_components, n_samples)
-        
+
+        # Separate parameters based on their type
+        self.mean_params = []
+        self.logvar_params = []
+        self.mixture_params = []
+        for name, param in self.named_parameters():
+            if 'mu' in name:
+                self.mean_params.append(param)
+            elif 'logvar' in name:
+                self.logvar_params.append(param)
+            elif 'mix_logits' in name:
+                self.mixture_params.append(param)
+        assert len(self.mean_params) == len(self.logvar_params)
+
     def forward(self, x, sample=True):
         x = x.view(-1, self.input_dim)
         x = F.relu(self.layer1(x, sample))

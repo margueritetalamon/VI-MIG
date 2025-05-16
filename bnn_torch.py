@@ -1,15 +1,15 @@
-import torch
-import torch.nn as nn
-import torch.nn.functional as F
-import torch.optim as optim
-from torch.distributions import Normal, Categorical
-from torchvision import datasets, transforms
-import matplotlib.pyplot as plt
-import numpy as np
 import os
 import tap
 import json
 import datetime
+import torch
+import torch.nn.functional as F
+
+from utils_bnn_torch import (
+    load_mnist,
+    save_and_plot_metrics,
+    save_metrics,
+    save_model_checkpoint)
 from IBNN import IsotropicSampledMixtureNN
 
 class MargArgs(tap.Tap):
@@ -20,8 +20,31 @@ class MargArgs(tap.Tap):
     hidden_dim: int = 256
     save_interval: int = 1  # Save metrics every N epochs
     save_dir: str = "./results_mnist"  # Directory to save results
+    seed: int = 42
 
 args = MargArgs().parse_args()
+
+# Set random seed for reproducibility
+torch.set_default_dtype(torch.float64)
+torch.manual_seed(args.seed)
+
+# get method id
+METHOD_IBW = 0
+METHOD_MD = 1
+METHOD_LIN = 2
+METHOD_GD = 3
+method: int = -1
+if args.method == "ibw":
+    method = METHOD_IBW
+if args.method == "md":
+    method = METHOD_MD
+if args.method == "lin":
+    method = METHOD_LIN
+if args.method == "gd":
+    method = METHOD_GD
+if method < 0:
+    print(f"Unsupported method: {args.method}")
+    raise NotImplementedError
 
 # Create directory to save results if it doesn't exist
 os.makedirs(args.save_dir, exist_ok=True)
@@ -40,15 +63,10 @@ hyperparams = {
     "hidden_dim": args.hidden_dim,
     "save_interval": args.save_interval,
     "timestamp": timestamp,
-    "pytorch_seed": 42
+    "pytorch_seed": args.seed
 }
-
 with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
     json.dump(hyperparams, f, indent=4)
-
-# Set random seed for reproducibility
-torch.set_default_dtype(torch.float64)
-torch.manual_seed(hyperparams["pytorch_seed"])
 
 # Save the model configuration
 model_config = {
@@ -58,24 +76,11 @@ model_config = {
     "n_components": args.n_components,
     "n_samples": args.n_components
 }
-
 with open(os.path.join(run_dir, "model_config.json"), "w") as f:
     json.dump(model_config, f, indent=4)
 
-# Load MNIST dataset
-transform = transforms.Compose([
-    transforms.ToTensor(),
-    transforms.Normalize((0.1307,), (0.3081,))
-])
-
-download_mnist = True
-if os.path.exists("./data/MNIST"):
-    download_mnist = False
-train_dataset = datasets.MNIST('./data', train=True, download=download_mnist, transform=transform)
-test_dataset = datasets.MNIST('./data', train=False, transform=transform)
-
-train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
-test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False)
+# Load dataset
+train_loader, test_loader = load_mnist()
 
 # Initialize model and optimizer
 n_components = args.n_components
@@ -145,10 +150,11 @@ def evaluate_model(model, data_loader, n_samples=5):
     return avg_loss, avg_nll, avg_kl_div, accuracy
 
 # Custom gradient descent for Bayesian Neural Networks with special logvar update
-def bayesian_gradient_descent(model, learning_rate=0.001,
-                              max_norm=5.0,
-                              eps=1e-6,
-                              method="ibw"):
+def bayesian_gradient_descent(model,
+                              learning_rate: float = 0.001,
+                              max_norm: float = 5.0,
+                              eps: float = 1e-6,
+                              method: int = METHOD_IBW):
     """
     Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
     
@@ -157,38 +163,22 @@ def bayesian_gradient_descent(model, learning_rate=0.001,
     - learning_rate: Base learning rate for all parameters
     - max_norm: Maximum gradient norm for clipping
     - eps: Small constant for numerical stability
-    - method: Update method for logvar ("ibw", "md", "lin", "gd")
+    - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_LIN)
     """
-    # Separate parameters by type
-    mean_params = []
-    logvar_params = []
-    mixture_params = []
-    
-    for name, param in model.named_parameters():
-        if param.grad is None:
-            continue
-            
-        # Apply gradient clipping to avoid explosive gradients
-        if max_norm > 0:
-            torch.nn.utils.clip_grad_norm_(param, max_norm)
-            
-        # Separate parameters based on their type
-        if 'mu' in name:
-            mean_params.append(param)
-        elif 'logvar' in name:
-            logvar_params.append(param)
-        elif 'mix_logits' in name:
-            mixture_params.append(param)
-    
     # Update means using standard gradient descent
     with torch.no_grad():
         d = model.input_dim
         n = model.n_components
-        assert len(mean_params) == len(logvar_params)
-        for p, param in enumerate(mean_params):
-            if method == "lin":
+        for p, param in enumerate(model.mean_params):
+            if param.grad is None:
+                continue
+
+            # Apply gradient clipping to avoid explosive gradients
+            torch.nn.utils.clip_grad_norm_(param, max_norm)
+
+            if method == METHOD_LIN:
                 mu = param.data
-                ek = logvar_params[p].data.unsqueeze(1)
+                ek = model.logvar_params[p].data.unsqueeze(1)
                 if mu.ndim == 3:
                     ek = ek.unsqueeze(1)
                 new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
@@ -197,9 +187,9 @@ def bayesian_gradient_descent(model, learning_rate=0.001,
                 param.data.add_(param.grad, alpha=-n * learning_rate)
         
         # Update logvars using variance gradients
-        for param in logvar_params:
+        for param in model.logvar_params:
             # Convert logvar gradients to variance gradients
-            if method == "gd":
+            if method == METHOD_GD:
                 param.data.add_(param.grad, alpha=-n * learning_rate / d)
             else:
                 # If we have logvar, then var = exp(logvar)
@@ -213,18 +203,19 @@ def bayesian_gradient_descent(model, learning_rate=0.001,
                 var_grad = param.grad / variance
                 
                 # Apply your update rule in variance space
-                if method == "ibw":
+                if method == METHOD_IBW:
                     # var = var + var_update_factor * var_grad^2
                     var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
                     new_variance = var_update * variance
-                elif method == "md":
+                elif method == METHOD_MD:
                     var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
                     new_variance = var_update * variance
-                elif method == "lin":
+                elif method == METHOD_LIN:
                     inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
                     new_variance = 1.0 / inv_new_variance
                 else:
-                    raise NotImplementedError
+                    # no update
+                    new_variance = variance
             
                 # Convert back to logvar
                 new_logvar = torch.log(new_variance + eps)
@@ -364,37 +355,6 @@ def test(model, test_loader, n_samples=10):
     
     return avg_loss, avg_nll, avg_kl_div, accuracy, uncertainties
 
-# Save metrics function
-def save_metrics(epoch):
-    # Save metrics as numpy files
-    for metric_name, values in metrics.items():
-        np.save(os.path.join(run_dir, f"{metric_name}.npy"), np.array(values))
-    
-    # Also save the current state of all metrics in one file for convenience
-    np.save(os.path.join(run_dir, f"metrics_epoch_{epoch}.npy"), metrics)
-    
-    # Save the latest metrics values to a JSON file for easy inspection
-    latest_metrics = {metric: values[-1] for metric, values in metrics.items()}
-    latest_metrics["epoch"] = epoch
-    
-    with open(os.path.join(run_dir, "latest_metrics.json"), "w") as f:
-        json.dump(latest_metrics, f, indent=4)
-    
-    print(f"Metrics saved for epoch {epoch}")
-
-# Function to save model checkpoints
-def save_model_checkpoint(model, epoch):
-    checkpoint = {
-        "epoch": epoch,
-        "model_state_dict": model.state_dict(),
-        "hyperparams": hyperparams,
-        "latest_metrics": {metric: values[-1] for metric, values in metrics.items()}
-    }
-    torch.save(checkpoint, os.path.join(run_dir, f"model_checkpoint_epoch_{epoch}.pt"))
-    # Also save as latest checkpoint
-    torch.save(checkpoint, os.path.join(run_dir, "model_latest.pt"))
-    print(f"Model checkpoint saved for epoch {epoch}")
-
 # Train the model
 epochs = args.epochs
 
@@ -422,127 +382,18 @@ print(f"  Train accuracy: {train_accuracy:.4f}, ELBO: {-(train_nll + train_kl_di
 print(f"  Test accuracy: {test_accuracy:.4f}, ELBO: {-(test_nll + test_kl_div):.4f}")
 
 # Save initial metrics
-save_metrics(0)
-save_model_checkpoint(model, 0)
+save_metrics(0, metrics, run_dir)
+save_model_checkpoint(model, 0, hyperparams, metrics, run_dir)
 
 # Start training loop
 for epoch in range(1, epochs + 1):
     metrics['epochs'].append(epoch)
-    train_metrics = train(model, train_loader, epoch, args.method)
+    train_metrics = train(model, train_loader, epoch, method)
     test_metrics = test(model, test_loader)
     
     # Save metrics every save_interval epochs and on the last epoch
     if epoch % args.save_interval == 0 or epoch == epochs:
-        save_metrics(epoch)
-        save_model_checkpoint(model, epoch)
+        save_metrics(epoch, metrics, run_dir)
+        save_model_checkpoint(model, epoch, hyperparams, metrics, run_dir)
 
-# Final save of all metrics
-print("Training completed. Saving final metrics...")
-np.save(os.path.join(run_dir, "metrics_all.npy"), metrics)
-print(f"All metrics saved to {run_dir}")
-
-# Plot training and testing curves
-plt.figure(figsize=(15, 10))
-
-# Get epoch numbers for x-axis (including epoch 0)
-epochs_list = metrics['epochs']
-
-# Accuracy plot
-plt.subplot(2, 2, 1)
-plt.plot(epochs_list, metrics['train_accuracy'], label='Train')
-plt.plot(epochs_list, metrics['test_accuracy'], label='Test')
-plt.title('Accuracy')
-plt.xlabel('Epoch')
-plt.ylabel('Accuracy')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.7)
-
-# ELBO plot
-plt.subplot(2, 2, 2)
-plt.plot(epochs_list, metrics['train_elbo'], label='Train')
-plt.plot(epochs_list, metrics['test_elbo'], label='Test')
-plt.title('ELBO')
-plt.xlabel('Epoch')
-plt.ylabel('ELBO')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.7)
-
-# KL Divergence plot
-plt.subplot(2, 2, 3)
-plt.plot(epochs_list, metrics['train_kl_div'], label='Train')
-plt.plot(epochs_list, metrics['test_kl_div'], label='Test')
-plt.title('KL Divergence')
-plt.xlabel('Epoch')
-plt.ylabel('KL Divergence')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.7)
-
-# Negative Log Likelihood plot
-plt.subplot(2, 2, 4)
-plt.plot(epochs_list, metrics['train_nll'], label='Train')
-plt.plot(epochs_list, metrics['test_nll'], label='Test')
-plt.title('Negative Log Likelihood')
-plt.xlabel('Epoch')
-plt.ylabel('NLL')
-plt.legend()
-plt.grid(True, linestyle='--', alpha=0.7)
-
-plt.tight_layout()
-plt.savefig(os.path.join(run_dir, "training_curves.png"))
-
-# Save a summary text file with the training results
-with open(os.path.join(run_dir, "training_summary.txt"), "w") as f:
-    f.write(f"Training Summary for {args.method} Method\n")
-    f.write("=" * 50 + "\n\n")
-    f.write(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
-    
-    f.write("Hyperparameters:\n")
-    for key, value in hyperparams.items():
-        f.write(f"  {key}: {value}\n")
-    f.write("\n")
-    
-    f.write("Initial Metrics (Pre-Training):\n")
-    f.write(f"  train_accuracy: {metrics['train_accuracy'][0]:.6f}\n")
-    f.write(f"  train_nll: {metrics['train_nll'][0]:.6f}\n")
-    f.write(f"  train_kl_div: {metrics['train_kl_div'][0]:.6f}\n")
-    f.write(f"  train_elbo: {metrics['train_elbo'][0]:.6f}\n")
-    f.write(f"  test_accuracy: {metrics['test_accuracy'][0]:.6f}\n")
-    f.write(f"  test_nll: {metrics['test_nll'][0]:.6f}\n")
-    f.write(f"  test_kl_div: {metrics['test_kl_div'][0]:.6f}\n")
-    f.write(f"  test_elbo: {metrics['test_elbo'][0]:.6f}\n\n")
-    
-    f.write("Final Metrics (After Training):\n")
-    for metric, values in metrics.items():
-        if metric != 'epochs' and len(values) > 1:
-            f.write(f"  {metric}: {values[-1]:.6f}\n")
-    f.write("\n")
-    
-    # Calculate improvements from initial to final
-    f.write("Improvements (Final - Initial):\n")
-    for metric in ['train_accuracy', 'test_accuracy', 'train_elbo', 'test_elbo']:
-        if len(metrics[metric]) > 1:
-            improvement = metrics[metric][-1] - metrics[metric][0]
-            f.write(f"  {metric}: {improvement:.6f}\n")
-    f.write("\n")
-    
-    # Find best metrics
-    best_train_acc = max(metrics['train_accuracy'])
-    best_train_acc_epoch = metrics['epochs'][metrics['train_accuracy'].index(best_train_acc)]
-    
-    best_test_acc = max(metrics['test_accuracy'])
-    best_test_acc_epoch = metrics['epochs'][metrics['test_accuracy'].index(best_test_acc)]
-    
-    best_train_elbo = max(metrics['train_elbo'])
-    best_train_elbo_epoch = metrics['epochs'][metrics['train_elbo'].index(best_train_elbo)]
-    
-    best_test_elbo = max(metrics['test_elbo'])
-    best_test_elbo_epoch = metrics['epochs'][metrics['test_elbo'].index(best_test_elbo)]
-    
-    f.write("Best Metrics:\n")
-    f.write(f"  Best Train Accuracy: {best_train_acc:.4f} (Epoch {best_train_acc_epoch})\n")
-    f.write(f"  Best Test Accuracy: {best_test_acc:.4f} (Epoch {best_test_acc_epoch})\n")
-    f.write(f"  Best Train ELBO: {best_train_elbo:.4f} (Epoch {best_train_elbo_epoch})\n")
-    f.write(f"  Best Test ELBO: {best_test_elbo:.4f} (Epoch {best_test_elbo_epoch})\n")
-
-print(f"Training summary saved to {os.path.join(run_dir, 'training_summary.txt')}")
-
+save_and_plot_metrics(args.method, metrics, hyperparams, run_dir)
