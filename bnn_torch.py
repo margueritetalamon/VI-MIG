@@ -7,10 +7,60 @@ from torchvision import datasets, transforms
 import matplotlib.pyplot as plt
 import numpy as np
 import os
+import tap
+import json
+import datetime
+from IBNN import IsotropicSampledMixtureNN
+
+class MargArgs(tap.Tap):
+    method: str = "ibw" # method: ibw, md, lin
+    lr: float = 1e-3 # learning rate
+    n_components: int = 5 # number of gaussians in MOG
+    epochs: int = 10 # number of times we go through the dataset
+    hidden_dim: int = 256
+    save_interval: int = 1  # Save metrics every N epochs
+    save_dir: str = "./results_mnist"  # Directory to save results
+
+args = MargArgs().parse_args()
+
+# Create directory to save results if it doesn't exist
+os.makedirs(args.save_dir, exist_ok=True)
+
+# Create a timestamp for this run
+timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
+run_dir = os.path.join(args.save_dir, f"{args.method}_{timestamp}")
+os.makedirs(run_dir, exist_ok=True)
+
+# Save hyperparameters
+hyperparams = {
+    "method": args.method,
+    "learning_rate": args.lr,
+    "n_components": args.n_components,
+    "epochs": args.epochs,
+    "hidden_dim": args.hidden_dim,
+    "save_interval": args.save_interval,
+    "timestamp": timestamp,
+    "pytorch_seed": 42
+}
+
+with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
+    json.dump(hyperparams, f, indent=4)
 
 # Set random seed for reproducibility
 torch.set_default_dtype(torch.float64)
-torch.manual_seed(42)
+torch.manual_seed(hyperparams["pytorch_seed"])
+
+# Save the model configuration
+model_config = {
+    "input_dim": 28 * 28,  # MNIST image size
+    "hidden_dim": args.hidden_dim,
+    "output_dim": 10,      # MNIST has 10 classes
+    "n_components": args.n_components,
+    "n_samples": args.n_components
+}
+
+with open(os.path.join(run_dir, "model_config.json"), "w") as f:
+    json.dump(model_config, f, indent=4)
 
 # Load MNIST dataset
 transform = transforms.Compose([
@@ -27,393 +77,87 @@ test_dataset = datasets.MNIST('./data', train=False, transform=transform)
 train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
 test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False)
 
-# Define a Bayesian Layer with Sampled Mixture of Gaussians
-class SampledMixtureLinear(nn.Module):
-    def __init__(self, in_features, out_features, n_components=2, n_samples=5):
-        super(SampledMixtureLinear, self).__init__()
-        
-        # Initialize mixture components parameters
-        self.in_features = in_features
-        self.out_features = out_features
-        self.n_components = n_components
-        self.n_samples = n_samples  # Number of components to sample during forward pass
-        
-        # Mixture weights (probabilities)
-        self.mix_logits = nn.Parameter(torch.zeros(n_components))
-        
-        # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 0.1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).normal_(0, 0.1))
-        
-        # Log variance parameters for each Gaussian component
-        self.weight_logvar = nn.Parameter(torch.Tensor(n_components, out_features, in_features).fill_(-5))
-        self.bias_logvar = nn.Parameter(torch.Tensor(n_components, out_features).fill_(-5))
-        
-    def forward(self, x, sample=True):
-        batch_size = x.size(0)
-        
-        # Get mixture weights
-        mix_weights = F.softmax(self.mix_logits, dim=0)
-        
-        # Determine how many components to sample
-        n_samples = min(self.n_samples, self.n_components)
-        
-        if self.training or sample:
-            # Create categorical distribution for sampling components
-            mixture_dist = Categorical(mix_weights)
-            
-            # Sample component indices based on their weights
-            if self.n_components <= self.n_samples:
-                # If we have fewer components than samples, use all components
-                sampled_indices = torch.arange(self.n_components, device=x.device)
-                sampled_weights = mix_weights
-            else:
-                # Sample components according to mixture weights
-                sampled_indices = mixture_dist.sample((n_samples,))
-                
-                # To avoid duplicate samples, use unique indices
-                sampled_indices = torch.unique(sampled_indices)
-                
-                # If we ended up with fewer unique samples, sample more
-                while len(sampled_indices) < n_samples and len(sampled_indices) < self.n_components:
-                    new_indices = mixture_dist.sample((n_samples - len(sampled_indices),))
-                    sampled_indices = torch.unique(torch.cat([sampled_indices, new_indices]))
-                
-                # Get the weights of the sampled components
-                sampled_weights = mix_weights[sampled_indices]
-                
-                # Normalize the sampled weights to sum to 1
-                sampled_weights = sampled_weights / sampled_weights.sum()
-            
-            # Initialize output
-            output = torch.zeros(batch_size, self.out_features, device=x.device)
-            
-            # Process sampled components
-            for _ in range(5):
-                for i, idx in enumerate(sampled_indices):
-                        # Sample weights from the component
-                        weight = self.weight_mu[idx] + torch.exp(0.5 * self.weight_logvar[idx]) * torch.randn_like(self.weight_mu[idx])
-                        bias = self.bias_mu[idx] + torch.exp(0.5 * self.bias_logvar[idx]) * torch.randn_like(self.bias_mu[idx])
-                        
-                        # Compute output for this component
-                        component_output = F.linear(x, weight, bias)
-                        
-                        # Add to total output, weighted by this component's weight
-                        output += sampled_weights[i] * component_output
-            output /= 5
-        else:
-            # During evaluation without sampling, use expected values weighted by mixture weights
-            output = torch.zeros(batch_size, self.out_features, device=x.device)
-            for _ in range(5):
-                for k in range(self.n_components):
-                    component_output = F.linear(x, self.weight_mu[k], self.bias_mu[k])
-                    output += mix_weights[k] * component_output
-            output /= 5
-                
-        return output
-    
-    def kl_divergence(self, prior_mu=0, prior_var=1, mc_samples=10):
-        """
-        Calculate KL divergence using Monte Carlo sampling from the mixture components.
-        """
-        mix_weights = F.softmax(self.mix_logits, dim=0)
-        
-        # Determine number of components to sample for KL calculation
-        n_kl_samples = min(mc_samples, self.n_components)
-        
-        # Create categorical distribution for sampling components
-        mixture_dist = Categorical(mix_weights)
-        
-        # Sample component indices for KL calculation
-        if self.n_components <= n_kl_samples:
-            # If we have fewer components than KL samples, use all components with their exact weights
-            sampled_indices = torch.arange(self.n_components, device=self.mix_logits.device)
-            sampled_weights = mix_weights
-        else:
-            # Sample components based on mixture weights
-            sampled_indices = mixture_dist.sample((n_kl_samples,))
-            sampled_counts = torch.bincount(sampled_indices, minlength=self.n_components)
-            sampled_weights = sampled_counts.float() / n_kl_samples
-        
-        # Calculate KL only for sampled components
-        kl_total = 0
-        for idx in sampled_indices.unique():
-            weight = mix_weights[idx]
-            
-            # KL for weights
-            kl_weights = 0.5 * weight * torch.sum(
-                self.weight_logvar[idx].exp() / prior_var +
-                (self.weight_mu[idx] - prior_mu)**2 / prior_var -
-                1 - self.weight_logvar[idx]
-            )
-            
-            # KL for bias
-            kl_bias = 0.5 * weight * torch.sum(
-                self.bias_logvar[idx].exp() / prior_var +
-                (self.bias_mu[idx] - prior_mu)**2 / prior_var -
-                1 - self.bias_logvar[idx]
-            )
-            
-            kl_total += kl_weights + kl_bias
-        
-        # Scale the KL by the ratio of total components to sampled components
-        if self.n_components > n_kl_samples:
-            kl_total = kl_total * (self.n_components / n_kl_samples)
-            
-        return kl_total
-
-# Define Bayesian Neural Network
-class SampledMixtureNN(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=10, n_components=2, n_samples=5):
-        super(SampledMixtureNN, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.n_components = n_components
-        self.layer1 = SampledMixtureLinear(input_dim, hidden_dim, n_components, n_samples)
-        self.layer2 = SampledMixtureLinear(hidden_dim, output_dim, n_components, n_samples)
-        
-    def forward(self, x, sample=True):
-        x = x.view(-1, 784)
-        x = F.relu(self.layer1(x, sample))
-        x = self.layer2(x, sample)
-        return x
-    
-    def kl_divergence(self, mc_samples=10):
-        return self.layer1.kl_divergence(mc_samples=mc_samples) + self.layer2.kl_divergence(mc_samples=mc_samples)
-    
-    def get_mixture_weights(self):
-        layer1_weights = F.softmax(self.layer1.mix_logits, dim=0)
-        layer2_weights = F.softmax(self.layer2.mix_logits, dim=0)
-        return layer1_weights, layer2_weights
-
-# Define a Bayesian Layer with Sampled Mixture of Isotropic Gaussians
-class IsotropicSampledMixtureLinear(nn.Module):
-    def __init__(self, in_features, out_features, n_components=2, n_samples=5):
-        super(IsotropicSampledMixtureLinear, self).__init__()
-        
-        # Initialize mixture components parameters
-        self.in_features = in_features
-        self.out_features = out_features
-        self.n_components = n_components
-        self.n_samples = n_samples  # Number of components to sample during forward pass
-        
-        # Mixture weights (probabilities)
-        self.mix_logits = nn.Parameter(torch.zeros(n_components))
-        
-        # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 0.1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).normal_(0, 0.1))
-        
-        # Single scalar log variance parameter for each component (isotropic)
-        # One for weights and one for biases per component
-        self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
-        self.bias_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
-        
-    def forward(self, x, sample=True):
-        batch_size = x.size(0)
-        
-        # Get mixture weights
-        mix_weights = F.softmax(self.mix_logits, dim=0)
-        
-        # Determine how many components to sample
-        n_samples = min(self.n_samples, self.n_components)
-        
-        if self.training or sample:
-            # Create categorical distribution for sampling components
-            mixture_dist = Categorical(mix_weights)
-            
-            # Sample component indices based on their weights
-            if self.n_components <= self.n_samples:
-                # If we have fewer components than samples, use all components
-                sampled_indices = torch.arange(self.n_components, device=x.device)
-                sampled_weights = mix_weights
-            else:
-                # Sample components according to mixture weights
-                sampled_indices = mixture_dist.sample((n_samples,))
-                
-                # To avoid duplicate samples, use unique indices
-                sampled_indices = torch.unique(sampled_indices)
-                
-                # If we ended up with fewer unique samples, sample more
-                while len(sampled_indices) < n_samples and len(sampled_indices) < self.n_components:
-                    new_indices = mixture_dist.sample((n_samples - len(sampled_indices),))
-                    sampled_indices = torch.unique(torch.cat([sampled_indices, new_indices]))
-                
-                # Get the weights of the sampled components
-                sampled_weights = mix_weights[sampled_indices]
-                
-                # Normalize the sampled weights to sum to 1
-                sampled_weights = sampled_weights / sampled_weights.sum()
-            
-            # Initialize output
-            output = torch.zeros(batch_size, self.out_features, device=x.device)
-            
-            # Process sampled components
-            for i, idx in enumerate(sampled_indices):
-                # For isotropic Gaussian, we use the same scalar variance for all weights
-                # We need to broadcast the scalar variance to all weights
-                weight_std = torch.exp(0.5 * self.weight_logvar[idx])
-                bias_std = torch.exp(0.5 * self.bias_logvar[idx])
-                
-                # Sample weights using isotropic variance
-                weight = self.weight_mu[idx] + weight_std * torch.randn_like(self.weight_mu[idx])
-                bias = self.bias_mu[idx] + bias_std * torch.randn_like(self.bias_mu[idx])
-                
-                # Compute output for this component
-                component_output = F.linear(x, weight, bias)
-                
-                # Add to total output, weighted by this component's weight
-                output += sampled_weights[i] * component_output
-        else:
-            # During evaluation without sampling, use expected values weighted by mixture weights
-            output = torch.zeros(batch_size, self.out_features, device=x.device)
-            for k in range(self.n_components):
-                component_output = F.linear(x, self.weight_mu[k], self.bias_mu[k])
-                output += mix_weights[k] * component_output
-                
-        return output
-    
-    def kl_divergence(self, prior_mu=0, prior_var=1, mc_samples=10):
-        """
-        Calculate KL divergence for isotropic Gaussian mixture components.
-        """
-        mix_weights = F.softmax(self.mix_logits, dim=0)
-        
-        # Determine number of components to sample for KL calculation
-        n_kl_samples = min(mc_samples, self.n_components)
-        
-        # Create categorical distribution for sampling components
-        mixture_dist = Categorical(mix_weights)
-        
-        # Sample component indices for KL calculation
-        if self.n_components <= n_kl_samples:
-            # If we have fewer components than KL samples, use all components with their exact weights
-            sampled_indices = torch.arange(self.n_components, device=self.mix_logits.device)
-            sampled_weights = mix_weights
-        else:
-            # Sample components based on mixture weights
-            sampled_indices = mixture_dist.sample((n_kl_samples,))
-            sampled_counts = torch.bincount(sampled_indices, minlength=self.n_components)
-            sampled_weights = sampled_counts.float() / n_kl_samples
-        
-        # Calculate KL only for sampled components
-        kl_total = 0
-        for idx in sampled_indices.unique():
-            weight = mix_weights[idx]
-            
-            # KL for weights - note we're using a scalar variance for all weights
-            # We need to account for the number of weight parameters
-            n_weight_params = self.weight_mu[idx].numel()
-            kl_weights = 0.5 * weight * (
-                n_weight_params * (self.weight_logvar[idx].exp() / prior_var - 1 - self.weight_logvar[idx]) +
-                torch.sum((self.weight_mu[idx] - prior_mu)**2) / prior_var
-            )
-            
-            # KL for bias - note we're using a scalar variance for all biases
-            # We need to account for the number of bias parameters
-            n_bias_params = self.bias_mu[idx].numel()
-            kl_bias = 0.5 * weight * (
-                n_bias_params * (self.bias_logvar[idx].exp() / prior_var - 1 - self.bias_logvar[idx]) +
-                torch.sum((self.bias_mu[idx] - prior_mu)**2) / prior_var
-            )
-            
-            kl_total += kl_weights + kl_bias
-        
-        # Scale the KL by the ratio of total components to sampled components
-        if self.n_components > n_kl_samples:
-            kl_total = kl_total * (self.n_components / n_kl_samples)
-            
-        return kl_total
-
-# Define Bayesian Neural Network with Isotropic Gaussian Mixtures
-class IsotropicSampledMixtureNN(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim=256, output_dim=10, n_components=2, n_samples=5):
-        super(IsotropicSampledMixtureNN, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.n_components = n_components
-        self.layer1 = IsotropicSampledMixtureLinear(input_dim, hidden_dim, n_components, n_samples)
-        self.layer2 = IsotropicSampledMixtureLinear(hidden_dim, output_dim, n_components, n_samples)
-        
-    def forward(self, x, sample=True):
-        x = x.view(-1, self.input_dim)
-        x = F.relu(self.layer1(x, sample))
-        x = F.softmax(self.layer2(x, sample))
-        return x
-    
-    def kl_divergence(self, mc_samples=10):
-        return self.layer1.kl_divergence(mc_samples=mc_samples) + self.layer2.kl_divergence(mc_samples=mc_samples)
-    
-    def get_mixture_weights(self):
-        layer1_weights = F.softmax(self.layer1.mix_logits, dim=0)
-        layer2_weights = F.softmax(self.layer2.mix_logits, dim=0)
-        return layer1_weights, layer2_weights
-
-class SuperIsotropicSampledMixtureNN(nn.Module):
-    def __init__(self, input_dim=784, hidden_dim1=256, hidden_dim2=128, output_dim=10, n_components=2, n_samples=5):
-        super(SuperIsotropicSampledMixtureNN, self).__init__()
-        self.input_dim = input_dim
-        self.output_dim = output_dim
-        self.n_components = n_components
-        self.layer1 = IsotropicSampledMixtureLinear(input_dim, hidden_dim1, n_components, n_samples)
-        self.layer2 = IsotropicSampledMixtureLinear(hidden_dim1, hidden_dim2, n_components, n_samples)
-        self.layer3 = IsotropicSampledMixtureLinear(hidden_dim2, output_dim, n_components, n_samples)
-        
-    def forward(self, x, sample=True):
-        x = x.view(-1, self.input_dim)
-        x = F.relu(self.layer1(x, sample))
-        x = F.relu(self.layer2(x, sample))
-        x = self.layer3(x, sample)
-        return x
-    
-    def kl_divergence(self, mc_samples=10):
-        return self.layer1.kl_divergence(mc_samples=mc_samples) + self.layer2.kl_divergence(mc_samples=mc_samples) + self.layer3.kl_divergence(mc_samples=mc_samples)
-    
-    def get_mixture_weights(self):
-        layer1_weights = F.softmax(self.layer1.mix_logits, dim=0)
-        layer2_weights = F.softmax(self.layer2.mix_logits, dim=0)
-        layer3_weights = F.softmax(self.layer3.mix_logits, dim=0)
-        return layer1_weights, layer2_weights, layer3_weights
-
 # Initialize model and optimizer
-n_components = 5  # Try with more components
-n_samples = 5      # Sample only 3 components during forward pass
+n_components = args.n_components
+n_samples = n_components
 
-# model = SampledMixtureNN(n_components=n_components, n_samples=n_samples)
-model = IsotropicSampledMixtureNN(n_components=n_components, n_samples=n_samples, hidden_dim=512)
-# model = SuperIsotropicSampledMixtureNN(n_components=n_components, n_samples=n_samples, hidden_dim1=128, hidden_dim2=128)
-lr = 1e-3
+model = IsotropicSampledMixtureNN(n_components=n_components, n_samples=n_samples, hidden_dim=args.hidden_dim)
+lr = args.lr
 
-# ELBO loss function
-def elbo_loss(output, target, kl_div, n_samples):
-    # Negative log likelihood
-    nll = F.cross_entropy(output, target, reduction='sum')
-    # Scale KL divergence by dataset size
-    kl_div = kl_div / n_samples
-    # Return negative ELBO (we minimize this)
-    return nll + kl_div
+# Initialize metrics storage
+metrics = {
+    'train_accuracy': [],
+    'train_kl_div': [],
+    'train_nll': [],
+    'train_elbo': [],
+    'test_accuracy': [],
+    'test_kl_div': [],
+    'test_nll': [],
+    'test_elbo': [],
+    'epochs': []  # Store epoch numbers for plotting
+}
+
+# Function to evaluate model without training
+def evaluate_model(model, data_loader, n_samples=5):
+    """Evaluate model metrics without updating weights"""
+    model.eval()
+    total_loss = 0
+    total_nll = 0
+    total_kl_div = 0
+    correct = 0
+    n_data = len(data_loader.dataset)
+    
+    with torch.no_grad():
+        for data, target in data_loader:
+            # Get multiple predictions for robust evaluation
+            outputs = []
+            kl_divs = []
+            
+            for _ in range(n_samples):
+                outputs.append(model(data, sample=True))
+                kl_divs.append(model.kl_divergence(mc_samples=1))
+            
+            # Stack predictions and average
+            outputs = torch.stack(outputs)
+            mean_output = outputs.mean(0)
+            kl_div = torch.stack(kl_divs).mean()
+            
+            # Calculate accuracy
+            batch_accuracy, batch_correct = calculate_accuracy(mean_output, target)
+            correct += batch_correct
+            
+            # Calculate loss components
+            nll = F.cross_entropy(mean_output, target, reduction='sum')
+            kl_div_scaled = kl_div / n_data
+            loss = nll + kl_div_scaled
+            
+            # Accumulate metrics
+            total_loss += loss.item()
+            total_nll += nll.item()
+            total_kl_div += kl_div.item()
+    
+    # Calculate average metrics
+    avg_loss = total_loss / n_data
+    avg_nll = total_nll / n_data
+    avg_kl_div = total_kl_div / n_data
+    accuracy = correct / n_data
+    
+    return avg_loss, avg_nll, avg_kl_div, accuracy
 
 # Custom gradient descent for Bayesian Neural Networks with special logvar update
 def bayesian_gradient_descent(model, learning_rate=0.001,
-                              # mean_lr_factor=1.0, 
-                              # mixture_lr_factor=1.0,
-                              # weight_decay=1e-5,
                               max_norm=5.0,
-                              # logvar_update_factor=0.1,
                               eps=1e-6,
-                              method = "ibw"):
+                              method="ibw"):
     """
     Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
     
     Parameters:
     - model: The BNN model with mixture components
     - learning_rate: Base learning rate for all parameters
-    - mean_lr_factor: Learning rate multiplier for mean parameters
-    - mixture_lr_factor: Learning rate multiplier for mixture weights
-    - weight_decay: L2 regularization strength
     - max_norm: Maximum gradient norm for clipping
-    - logvar_update_factor: Scaling factor for the logvar update rule
     - eps: Small constant for numerical stability
+    - method: Update method for logvar ("ibw", "md", "lin", "gd")
     """
     # Separate parameters by type
     mean_params = []
@@ -442,82 +186,127 @@ def bayesian_gradient_descent(model, learning_rate=0.001,
         n = model.n_components
         assert len(mean_params) == len(logvar_params)
         for p, param in enumerate(mean_params):
-            # if weight_decay > 0:
-            #     param.grad.add_(weight_decay * param)
             if method == "lin":
-                param.data.add_(param.grad, alpha=-n * learning_rate * logvar_params[p].data)
+                mu = param.data
+                ek = logvar_params[p].data.unsqueeze(1)
+                if mu.ndim == 3:
+                    ek = ek.unsqueeze(1)
+                new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
+                param.data.copy_(new_mu)
             else:
-                # print(param.grad)
                 param.data.add_(param.grad, alpha=-n * learning_rate)
-                # print(param.data)
         
-        # Update mixture weights using standard gradient descent
-        # for param in mixture_params:
-        #     param.data.add_(param.grad, alpha=-learning_rate * mixture_lr_factor)
-
         # Update logvars using variance gradients
         for param in logvar_params:
             # Convert logvar gradients to variance gradients
-            # If we have logvar, then var = exp(logvar)
-            # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
-            
-            # Current variance (from logvar)
-            variance = torch.exp(param.data)
-            
-            # Convert logvar gradient to variance gradient
-            # dL/dvar = dL/dlogvar * (1/var)
-            var_grad = param.grad / variance
-            
-            # Apply your update rule in variance space
-            if method == "ibw":
-                # var = var + var_update_factor * var_grad^2
-                var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
-                new_variance = var_update * variance
-            elif method == "md":
-                var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
-                new_variance = var_update * variance
-            elif method == "lin":
-                inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
-                new_variance = 1.0 / inv_new_variance
+            if method == "gd":
+                param.data.add_(param.grad, alpha=-n * learning_rate / d)
             else:
-                raise NotImplementedError
+                # If we have logvar, then var = exp(logvar)
+                # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
+                
+                # Current variance (from logvar)
+                variance = torch.exp(param.data)
+                
+                # Convert logvar gradient to variance gradient
+                # dL/dvar = dL/dlogvar * (1/var)
+                var_grad = param.grad / variance
+                
+                # Apply your update rule in variance space
+                if method == "ibw":
+                    # var = var + var_update_factor * var_grad^2
+                    var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
+                    new_variance = var_update * variance
+                elif method == "md":
+                    var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
+                    new_variance = var_update * variance
+                elif method == "lin":
+                    inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
+                    new_variance = 1.0 / inv_new_variance
+                else:
+                    raise NotImplementedError
             
-            # Convert back to logvar
-            new_logvar = torch.log(new_variance + eps)
-            
-            # Update the parameter (logvar)
-            param.data.copy_(new_logvar)
+                # Convert back to logvar
+                new_logvar = torch.log(new_variance + eps)
+                
+                # Update the parameter (logvar)
+                param.data.copy_(new_logvar)
+
+# ELBO loss function
+def elbo_loss(output, target, kl_div, n_samples):
+    # Negative log likelihood
+    nll = F.cross_entropy(output, target, reduction='sum')
+    # Scale KL divergence by dataset size
+    kl_div = kl_div / n_samples
+    # Return negative ELBO (we minimize this)
+    return nll + kl_div, nll, kl_div
+
+# Calculate accuracy
+def calculate_accuracy(output, target):
+    pred = output.argmax(dim=1, keepdim=True)
+    correct = pred.eq(target.view_as(pred)).sum().item()
+    accuracy = correct / len(target)
+    return accuracy, correct
 
 # Training function
-def train(model, train_loader, epoch):
+def train(model, train_loader, epoch, method):
     model.train()
     train_loss = 0
+    train_nll_total = 0
+    train_kl_div_total = 0
     n_samples = len(train_loader.dataset)
+    correct = 0
     
     for batch_idx, (data, target) in enumerate(train_loader):
-        # optimizer.zero_grad()
         # Zero gradients from previous step
         for param in model.parameters():
             if param.grad is not None:
                 param.grad.zero_()
+
         output = model(data)
         kl_div = model.kl_divergence(mc_samples=5)  # Use MC sampling for KL
-        loss = elbo_loss(output, target, kl_div, n_samples)
-        loss.backward()
-        bayesian_gradient_descent(model, learning_rate=lr)
-        # optimizer.step()
+        loss, nll, kl_div_scaled = elbo_loss(output, target, kl_div, n_samples)
+        
+        # Calculate accuracy
+        batch_accuracy, batch_correct = calculate_accuracy(output, target)
+        correct += batch_correct
+        
+        # Accumulate metrics
         train_loss += loss.item()
+        train_nll_total += nll.item()
+        train_kl_div_total += kl_div.item()
+        
+        loss.backward()
+        bayesian_gradient_descent(model, learning_rate=lr, method=method)
         
         if batch_idx % 10 == 0:
             print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)}'
                   f' ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
     
-    print(f'====> Epoch: {epoch} Average loss: {train_loss / len(train_loader.dataset):.4f}')
+    # Calculate average metrics
+    avg_loss = train_loss / n_samples
+    avg_nll = train_nll_total / n_samples
+    avg_kl_div = train_kl_div_total / n_samples
+    accuracy = correct / n_samples
+    
+    # Store metrics
+    metrics['train_accuracy'].append(accuracy)
+    metrics['train_kl_div'].append(avg_kl_div)
+    metrics['train_nll'].append(avg_nll)
+    metrics['train_elbo'].append(-(avg_nll + avg_kl_div))  # Negative loss is ELBO
+    
+    print(f'====> Epoch: {epoch} Average loss: {avg_loss:.4f}, '
+          f'NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
+          f'Accuracy: {accuracy:.4f}')
+    
+    return avg_loss, avg_nll, avg_kl_div, accuracy
 
 # Evaluation function with uncertainty estimation
 def test(model, test_loader, n_samples=10):
     model.eval()
     test_loss = 0
+    test_nll_total = 0
+    test_kl_div_total = 0
     correct = 0
     n_test = len(test_loader.dataset)
     uncertainties = []
@@ -526,11 +315,15 @@ def test(model, test_loader, n_samples=10):
         for data, target in test_loader:
             # Get multiple predictions
             outputs = []
+            kl_divs = []
+            
             for _ in range(n_samples):
-                outputs.append(F.softmax(model(data, sample=True), dim=1))
+                outputs.append(model(data, sample=True))
+                kl_divs.append(model.kl_divergence(mc_samples=1))
             
             # Stack predictions
             outputs = torch.stack(outputs)
+            kl_div = torch.stack(kl_divs).mean()
             
             # Mean prediction
             mean_output = outputs.mean(0)
@@ -539,66 +332,217 @@ def test(model, test_loader, n_samples=10):
             entropy = -torch.sum(mean_output * torch.log(mean_output + 1e-6), dim=1)
             uncertainties.extend(entropy.cpu().numpy())
             
-            # Get predictions
-            pred = mean_output.argmax(dim=1, keepdim=True)
-            correct += pred.eq(target.view_as(pred)).sum().item()
+            # Get predictions and calculate accuracy
+            batch_accuracy, batch_correct = calculate_accuracy(mean_output, target)
+            correct += batch_correct
             
-            # Calculate loss (use mean output for simplicity)
-            loss = F.cross_entropy(mean_output.log(), target, reduction='sum')
+            # Calculate loss components
+            nll = F.cross_entropy(mean_output, target, reduction='sum')
+            kl_div_scaled = kl_div / n_test
+            loss = nll + kl_div_scaled
+            
+            # Accumulate metrics
             test_loss += loss.item()
+            test_nll_total += nll.item()
+            test_kl_div_total += kl_div.item()
     
-    test_loss /= n_test
-    print(f'Test set: Average loss: {test_loss:.4f}, '
-          f'Accuracy: {correct}/{n_test} ({100. * correct / n_test:.2f}%)')
+    # Calculate average metrics
+    avg_loss = test_loss / n_test
+    avg_nll = test_nll_total / n_test
+    avg_kl_div = test_kl_div_total / n_test
+    accuracy = correct / n_test
     
-    return uncertainties
+    # Store metrics
+    metrics['test_accuracy'].append(accuracy)
+    metrics['test_kl_div'].append(avg_kl_div)
+    metrics['test_nll'].append(avg_nll)
+    metrics['test_elbo'].append(-(avg_nll + avg_kl_div))  # Negative loss is ELBO
+    
+    print(f'Test set: Average loss: {avg_loss:.4f}, '
+          f'NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
+          f'Accuracy: {accuracy:.4f} ({correct}/{n_test})')
+    
+    return avg_loss, avg_nll, avg_kl_div, accuracy, uncertainties
+
+# Save metrics function
+def save_metrics(epoch):
+    # Save metrics as numpy files
+    for metric_name, values in metrics.items():
+        np.save(os.path.join(run_dir, f"{metric_name}.npy"), np.array(values))
+    
+    # Also save the current state of all metrics in one file for convenience
+    np.save(os.path.join(run_dir, f"metrics_epoch_{epoch}.npy"), metrics)
+    
+    # Save the latest metrics values to a JSON file for easy inspection
+    latest_metrics = {metric: values[-1] for metric, values in metrics.items()}
+    latest_metrics["epoch"] = epoch
+    
+    with open(os.path.join(run_dir, "latest_metrics.json"), "w") as f:
+        json.dump(latest_metrics, f, indent=4)
+    
+    print(f"Metrics saved for epoch {epoch}")
+
+# Function to save model checkpoints
+def save_model_checkpoint(model, epoch):
+    checkpoint = {
+        "epoch": epoch,
+        "model_state_dict": model.state_dict(),
+        "hyperparams": hyperparams,
+        "latest_metrics": {metric: values[-1] for metric, values in metrics.items()}
+    }
+    torch.save(checkpoint, os.path.join(run_dir, f"model_checkpoint_epoch_{epoch}.pt"))
+    # Also save as latest checkpoint
+    torch.save(checkpoint, os.path.join(run_dir, "model_latest.pt"))
+    print(f"Model checkpoint saved for epoch {epoch}")
 
 # Train the model
-epochs = 10
-l1_weights_history = []
-l2_weights_history = []
+epochs = args.epochs
 
+print(f"Starting training with hyperparameters: {hyperparams}")
+print(f"Saving results to: {run_dir}")
+
+# Evaluate initial model performance (epoch 0) before any training
+print("Evaluating initial model performance (pre-training)...")
+_, train_nll, train_kl_div, train_accuracy = evaluate_model(model, train_loader)
+_, test_nll, test_kl_div, test_accuracy = evaluate_model(model, test_loader)
+
+# Store initial metrics (epoch 0)
+metrics['epochs'].append(0)
+metrics['train_accuracy'].append(train_accuracy)
+metrics['train_kl_div'].append(train_kl_div)
+metrics['train_nll'].append(train_nll)
+metrics['train_elbo'].append(-(train_nll + train_kl_div))
+metrics['test_accuracy'].append(test_accuracy)
+metrics['test_kl_div'].append(test_kl_div)
+metrics['test_nll'].append(test_nll)
+metrics['test_elbo'].append(-(test_nll + test_kl_div))
+
+print(f"Initial metrics before training:")
+print(f"  Train accuracy: {train_accuracy:.4f}, ELBO: {-(train_nll + train_kl_div):.4f}")
+print(f"  Test accuracy: {test_accuracy:.4f}, ELBO: {-(test_nll + test_kl_div):.4f}")
+
+# Save initial metrics
+save_metrics(0)
+save_model_checkpoint(model, 0)
+
+# Start training loop
 for epoch in range(1, epochs + 1):
-    # train(model, train_loader, optimizer, epoch)
-    train(model, train_loader, epoch)
-    uncertainties = test(model, test_loader)
+    metrics['epochs'].append(epoch)
+    train_metrics = train(model, train_loader, epoch, args.method)
+    test_metrics = test(model, test_loader)
+    
+    # Save metrics every save_interval epochs and on the last epoch
+    if epoch % args.save_interval == 0 or epoch == epochs:
+        save_metrics(epoch)
+        save_model_checkpoint(model, epoch)
 
-# Plot how mixture weights change during training
-plt.figure(figsize=(14, 6))
+# Final save of all metrics
+print("Training completed. Saving final metrics...")
+np.save(os.path.join(run_dir, "metrics_all.npy"), metrics)
+print(f"All metrics saved to {run_dir}")
 
-plt.subplot(1, 2, 1)
-for i in range(min(5, n_components)):  # Plot top 5 components
-    plt.plot([w[i] for w in l1_weights_history], label=f'Component {i+1}')
-plt.title('Layer 1 Top Component Weights')
+# Plot training and testing curves
+plt.figure(figsize=(15, 10))
+
+# Get epoch numbers for x-axis (including epoch 0)
+epochs_list = metrics['epochs']
+
+# Accuracy plot
+plt.subplot(2, 2, 1)
+plt.plot(epochs_list, metrics['train_accuracy'], label='Train')
+plt.plot(epochs_list, metrics['test_accuracy'], label='Test')
+plt.title('Accuracy')
 plt.xlabel('Epoch')
-plt.ylabel('Weight')
+plt.ylabel('Accuracy')
 plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
 
-plt.subplot(1, 2, 2)
-for i in range(min(5, n_components)):  # Plot top 5 components
-    plt.plot([w[i] for w in l2_weights_history], label=f'Component {i+1}')
-plt.title('Layer 2 Top Component Weights')
+# ELBO plot
+plt.subplot(2, 2, 2)
+plt.plot(epochs_list, metrics['train_elbo'], label='Train')
+plt.plot(epochs_list, metrics['test_elbo'], label='Test')
+plt.title('ELBO')
 plt.xlabel('Epoch')
-plt.ylabel('Weight')
+plt.ylabel('ELBO')
 plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+
+# KL Divergence plot
+plt.subplot(2, 2, 3)
+plt.plot(epochs_list, metrics['train_kl_div'], label='Train')
+plt.plot(epochs_list, metrics['test_kl_div'], label='Test')
+plt.title('KL Divergence')
+plt.xlabel('Epoch')
+plt.ylabel('KL Divergence')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
+
+# Negative Log Likelihood plot
+plt.subplot(2, 2, 4)
+plt.plot(epochs_list, metrics['train_nll'], label='Train')
+plt.plot(epochs_list, metrics['test_nll'], label='Test')
+plt.title('Negative Log Likelihood')
+plt.xlabel('Epoch')
+plt.ylabel('NLL')
+plt.legend()
+plt.grid(True, linestyle='--', alpha=0.7)
 
 plt.tight_layout()
-plt.show()
+plt.savefig(os.path.join(run_dir, "training_curves.png"))
 
-# Plot component weight distribution for final model
-plt.figure(figsize=(14, 6))
+# Save a summary text file with the training results
+with open(os.path.join(run_dir, "training_summary.txt"), "w") as f:
+    f.write(f"Training Summary for {args.method} Method\n")
+    f.write("=" * 50 + "\n\n")
+    f.write(f"Date: {datetime.datetime.now().strftime('%Y-%m-%d %H:%M:%S')}\n\n")
+    
+    f.write("Hyperparameters:\n")
+    for key, value in hyperparams.items():
+        f.write(f"  {key}: {value}\n")
+    f.write("\n")
+    
+    f.write("Initial Metrics (Pre-Training):\n")
+    f.write(f"  train_accuracy: {metrics['train_accuracy'][0]:.6f}\n")
+    f.write(f"  train_nll: {metrics['train_nll'][0]:.6f}\n")
+    f.write(f"  train_kl_div: {metrics['train_kl_div'][0]:.6f}\n")
+    f.write(f"  train_elbo: {metrics['train_elbo'][0]:.6f}\n")
+    f.write(f"  test_accuracy: {metrics['test_accuracy'][0]:.6f}\n")
+    f.write(f"  test_nll: {metrics['test_nll'][0]:.6f}\n")
+    f.write(f"  test_kl_div: {metrics['test_kl_div'][0]:.6f}\n")
+    f.write(f"  test_elbo: {metrics['test_elbo'][0]:.6f}\n\n")
+    
+    f.write("Final Metrics (After Training):\n")
+    for metric, values in metrics.items():
+        if metric != 'epochs' and len(values) > 1:
+            f.write(f"  {metric}: {values[-1]:.6f}\n")
+    f.write("\n")
+    
+    # Calculate improvements from initial to final
+    f.write("Improvements (Final - Initial):\n")
+    for metric in ['train_accuracy', 'test_accuracy', 'train_elbo', 'test_elbo']:
+        if len(metrics[metric]) > 1:
+            improvement = metrics[metric][-1] - metrics[metric][0]
+            f.write(f"  {metric}: {improvement:.6f}\n")
+    f.write("\n")
+    
+    # Find best metrics
+    best_train_acc = max(metrics['train_accuracy'])
+    best_train_acc_epoch = metrics['epochs'][metrics['train_accuracy'].index(best_train_acc)]
+    
+    best_test_acc = max(metrics['test_accuracy'])
+    best_test_acc_epoch = metrics['epochs'][metrics['test_accuracy'].index(best_test_acc)]
+    
+    best_train_elbo = max(metrics['train_elbo'])
+    best_train_elbo_epoch = metrics['epochs'][metrics['train_elbo'].index(best_train_elbo)]
+    
+    best_test_elbo = max(metrics['test_elbo'])
+    best_test_elbo_epoch = metrics['epochs'][metrics['test_elbo'].index(best_test_elbo)]
+    
+    f.write("Best Metrics:\n")
+    f.write(f"  Best Train Accuracy: {best_train_acc:.4f} (Epoch {best_train_acc_epoch})\n")
+    f.write(f"  Best Test Accuracy: {best_test_acc:.4f} (Epoch {best_test_acc_epoch})\n")
+    f.write(f"  Best Train ELBO: {best_train_elbo:.4f} (Epoch {best_train_elbo_epoch})\n")
+    f.write(f"  Best Test ELBO: {best_test_elbo:.4f} (Epoch {best_test_elbo_epoch})\n")
 
-plt.subplot(1, 2, 1)
-plt.bar(range(n_components), l1_weights_history[-1])
-plt.title('Layer 1 Final Component Weights')
-plt.xlabel('Component')
-plt.ylabel('Weight')
+print(f"Training summary saved to {os.path.join(run_dir, 'training_summary.txt')}")
 
-plt.subplot(1, 2, 2)
-plt.bar(range(n_components), l2_weights_history[-1])
-plt.title('Layer 2 Final Component Weights')
-plt.xlabel('Component')
-plt.ylabel('Weight')
-
-plt.tight_layout()
-plt.show()
