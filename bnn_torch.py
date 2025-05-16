@@ -10,7 +10,12 @@ from utils_bnn_torch import (
     save_and_plot_metrics,
     save_metrics,
     save_model_checkpoint)
-from IBNN import IsotropicSampledMixtureNN
+from IBNN import (
+    METHOD_IBW,
+    METHOD_MD,
+    METHOD_LIN,
+    METHOD_GD,
+    IsotropicSampledMixtureNN)
 
 class MargArgs(tap.Tap):
     method: str = "ibw" # method: ibw, md, lin
@@ -29,10 +34,6 @@ torch.set_default_dtype(torch.float64)
 torch.manual_seed(args.seed)
 
 # get method id
-METHOD_IBW = 0
-METHOD_MD = 1
-METHOD_LIN = 2
-METHOD_GD = 3
 method: int = -1
 if args.method == "ibw":
     method = METHOD_IBW
@@ -102,8 +103,29 @@ metrics = {
     'epochs': []  # Store epoch numbers for plotting
 }
 
+# ELBO loss function
+def elbo_loss(output: torch.Tensor,
+              target: torch.Tensor,
+              kl_div: torch.Tensor,
+              n_samples: int):
+    # Negative log likelihood
+    nll = F.cross_entropy(output, target, reduction='sum')
+    # Scale KL divergence by dataset size
+    kl_div = kl_div / n_samples
+    # Return negative ELBO (we minimize this)
+    return nll + kl_div, nll, kl_div
+
+# Calculate accuracy
+def calculate_accuracy(output: torch.Tensor, target: torch.Tensor):
+    pred = output.argmax(dim=1, keepdim=True)
+    correct = pred.eq(target.view_as(pred)).sum().item()
+    accuracy = correct / len(target)
+    return accuracy, correct
+
 # Function to evaluate model without training
-def evaluate_model(model, data_loader, n_samples=5):
+def evaluate_model(model,
+                   data_loader,
+                   n_samples=5):
     """Evaluate model metrics without updating weights"""
     model.eval()
     total_loss = 0
@@ -149,96 +171,6 @@ def evaluate_model(model, data_loader, n_samples=5):
     
     return avg_loss, avg_nll, avg_kl_div, accuracy
 
-# Custom gradient descent for Bayesian Neural Networks with special logvar update
-def bayesian_gradient_descent(model,
-                              learning_rate: float = 0.001,
-                              max_norm: float = 5.0,
-                              eps: float = 1e-6,
-                              method: int = METHOD_IBW):
-    """
-    Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
-    
-    Parameters:
-    - model: The BNN model with mixture components
-    - learning_rate: Base learning rate for all parameters
-    - max_norm: Maximum gradient norm for clipping
-    - eps: Small constant for numerical stability
-    - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_LIN)
-    """
-    # Update means using standard gradient descent
-    with torch.no_grad():
-        d = model.input_dim
-        n = model.n_components
-        for p, param in enumerate(model.mean_params):
-            if param.grad is None:
-                continue
-
-            # Apply gradient clipping to avoid explosive gradients
-            torch.nn.utils.clip_grad_norm_(param, max_norm)
-
-            if method == METHOD_LIN:
-                mu = param.data
-                ek = model.logvar_params[p].data.unsqueeze(1)
-                if mu.ndim == 3:
-                    ek = ek.unsqueeze(1)
-                new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
-                param.data.copy_(new_mu)
-            else:
-                param.data.add_(param.grad, alpha=-n * learning_rate)
-        
-        # Update logvars using variance gradients
-        for param in model.logvar_params:
-            # Convert logvar gradients to variance gradients
-            if method == METHOD_GD:
-                param.data.add_(param.grad, alpha=-n * learning_rate / d)
-            else:
-                # If we have logvar, then var = exp(logvar)
-                # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
-                
-                # Current variance (from logvar)
-                variance = torch.exp(param.data)
-                
-                # Convert logvar gradient to variance gradient
-                # dL/dvar = dL/dlogvar * (1/var)
-                var_grad = param.grad / variance
-                
-                # Apply your update rule in variance space
-                if method == METHOD_IBW:
-                    # var = var + var_update_factor * var_grad^2
-                    var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
-                    new_variance = var_update * variance
-                elif method == METHOD_MD:
-                    var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
-                    new_variance = var_update * variance
-                elif method == METHOD_LIN:
-                    inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
-                    new_variance = 1.0 / inv_new_variance
-                else:
-                    # no update
-                    new_variance = variance
-            
-                # Convert back to logvar
-                new_logvar = torch.log(new_variance + eps)
-                
-                # Update the parameter (logvar)
-                param.data.copy_(new_logvar)
-
-# ELBO loss function
-def elbo_loss(output, target, kl_div, n_samples):
-    # Negative log likelihood
-    nll = F.cross_entropy(output, target, reduction='sum')
-    # Scale KL divergence by dataset size
-    kl_div = kl_div / n_samples
-    # Return negative ELBO (we minimize this)
-    return nll + kl_div, nll, kl_div
-
-# Calculate accuracy
-def calculate_accuracy(output, target):
-    pred = output.argmax(dim=1, keepdim=True)
-    correct = pred.eq(target.view_as(pred)).sum().item()
-    accuracy = correct / len(target)
-    return accuracy, correct
-
 # Training function
 def train(model, train_loader, epoch, method):
     model.train()
@@ -268,7 +200,7 @@ def train(model, train_loader, epoch, method):
         train_kl_div_total += kl_div.item()
         
         loss.backward()
-        bayesian_gradient_descent(model, learning_rate=lr, method=method)
+        model.step(learning_rate=lr, method=method)
         
         if batch_idx % 10 == 0:
             print(f'Train Epoch: {epoch} [{batch_idx * len(data)}/{len(train_loader.dataset)}'
