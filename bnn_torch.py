@@ -17,7 +17,7 @@ from IBNN import (
     METHOD_MD,
     METHOD_LIN,
     METHOD_GD,
-    BayesianMLP)
+    IGMMBayesianMLP)
 
 class MargArgs(tap.Tap):
     dataset: str = "" # mnist, cifar10
@@ -93,7 +93,7 @@ n_samples = n_components
 
 # Define the model
 lr = args.lr
-model = BayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.hidden_dims)
+model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.hidden_dims)
 # Save the model configuration
 model_config = model.get_model_info()
 print(f"--> Model info:\n {model_config}")
