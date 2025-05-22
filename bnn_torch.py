@@ -96,6 +96,7 @@ lr = args.lr
 model = BayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.hidden_dims)
 # Save the model configuration
 model_config = model.get_model_info()
+print(f"--> Model info:\n {model_config}")
 with open(os.path.join(run_dir, "model_config.json"), "w") as f:
     json.dump(model_config, f, indent=4)
 
@@ -310,8 +311,8 @@ def test(model, test_loader, n_samples=10):
 # Train the model
 epochs = args.epochs
 
-print(f"Starting training with hyperparameters: {hyperparams}")
-print(f"Saving results to: {run_dir}")
+print(f"--> Starting training with hyperparameters:\n {hyperparams}")
+print(f"--> Saving results to: {run_dir}")
 
 # Evaluate initial model performance (epoch 0) before any training
 print("Evaluating initial model performance (pre-training)...")
