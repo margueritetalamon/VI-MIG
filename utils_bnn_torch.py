@@ -7,7 +7,28 @@ import json
 
 from torchvision import datasets, transforms
 
-def load_mnist():
+# Add this near the top of your file, after the imports
+def get_device():
+    if torch.cuda.is_available():
+        # NVIDIA GPU available (Linux/Windows)
+        torch.set_default_dtype(torch.float32)
+        device = torch.device("cuda")
+        print(f"Using CUDA device: {torch.cuda.get_device_name()}")
+        return device
+    elif torch.backends.mps.is_available():
+        # Apple Silicon GPU available (macOS)
+        torch.set_default_dtype(torch.float32)  # Changed from float64 for consistency
+        device = torch.device("mps")
+        print("Using MPS device (Apple Silicon)")
+        return device
+    else:
+        # CPU fallback
+        torch.set_default_dtype(torch.float32)
+        device = torch.device("cpu")
+        print("No GPU found. Using CPU instead.")
+        return device
+
+def load_mnist(batch_size: int = 128):
     # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -20,9 +41,38 @@ def load_mnist():
     train_dataset = datasets.MNIST('./data', train=True, download=download_mnist, transform=transform)
     test_dataset = datasets.MNIST('./data', train=False, transform=transform)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=128, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=128, shuffle=False)
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, test_loader
+
+def load_cifar10(batch_size: int = 128):
+    # Transform that flattens the images during loading
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+        transforms.Lambda(lambda x: x.view(-1))  # Flatten from (3,32,32) to (3072,)
+    ])
+
+    download_cifar = True
+    if os.path.exists("./data/CIFAR10"):
+        download_cifar = False
+    
+    train_dataset = datasets.CIFAR10('./data', train=True, download=download_cifar, transform=transform)
+    test_dataset = datasets.CIFAR10('./data', train=False, transform=transform)
+
+    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    
+    return train_loader, test_loader
+
+def load_dataset(dataset_name: str, batch_size: int = 128):
+    if dataset_name == "mnist":
+        return load_mnist(batch_size)
+    elif dataset_name == "cifar10":
+        return load_cifar10(batch_size)
+    else:
+        print("Please choose from available datasets: mnist, cifar10")
+        raise NotImplementedError
 
 
 # Save metrics function

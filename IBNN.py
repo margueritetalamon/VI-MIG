@@ -186,7 +186,7 @@ class IsotropicSampledMixtureNN(nn.Module):
              method: int = METHOD_IBW) -> None:
         """
         Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
-        
+
         Parameters:
         - model: The BNN model with mixture components
         - learning_rate: Base learning rate for all parameters
@@ -284,3 +284,216 @@ class SuperIsotropicSampledMixtureNN(nn.Module):
     
     def kl_divergence(self, mc_samples: int = 10) -> torch.Tensor:
         return self.layer1.kl_divergence(mc_samples=mc_samples) + self.layer2.kl_divergence(mc_samples=mc_samples) + self.layer3.kl_divergence(mc_samples=mc_samples)
+
+# Multi-Layer Bayesian Neural Network
+class BayesianMLP(nn.Module):
+    def __init__(self, input_dim: int, hidden_dims: list, output_dim: int,
+                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
+        """
+        Multi-layer Bayesian Neural Network using IsotropicSampledMixtureLinear layers.
+
+        Args:
+            input_dim: Input dimension
+            hidden_dims: List of hidden layer dimensions (e.g., [512, 256, 128])
+            output_dim: Output dimension (number of classes)
+            n_components: Number of mixture components per layer
+            n_samples: Number of components to sample during forward pass
+            dropout_rate: Dropout rate between layers (optional regularization)
+        """
+        super(BayesianMLP, self).__init__()
+
+        self.input_dim = input_dim
+        self.hidden_dims = hidden_dims
+        self.output_dim = output_dim
+        self.n_components = n_components
+        self.n_samples = n_samples
+        self.dropout_rate = dropout_rate
+
+        # Build the network layers
+        self.layers = nn.ModuleList()
+        self.dropouts = nn.ModuleList()
+
+        # Create all dimensions list (input -> hidden layers -> output)
+        all_dims = [input_dim] + hidden_dims + [output_dim]
+
+        # Create Bayesian layers
+        for i in range(len(all_dims) - 1):
+            layer = IsotropicSampledMixtureLinear(
+                in_features=all_dims[i],
+                out_features=all_dims[i + 1],
+                n_components=n_components,
+                n_samples=n_samples
+            )
+            self.layers.append(layer)
+
+            # Add dropout between hidden layers (not after output layer)
+            if i < len(all_dims) - 2 and dropout_rate > 0:
+                self.dropouts.append(nn.Dropout(dropout_rate))
+            else:
+                self.dropouts.append(nn.Identity())
+
+        # Separate parameters based on their type
+        self.mean_params = []
+        self.logvar_params = []
+        self.mixture_params = []
+        for name, param in self.named_parameters():
+            if 'mu' in name:
+                self.mean_params.append(param)
+            elif 'logvar' in name:
+                self.logvar_params.append(param)
+            elif 'mix_logits' in name:
+                self.mixture_params.append(param)
+        assert len(self.mean_params) == len(self.logvar_params)
+
+    def forward(self, x: torch.Tensor, sample: bool = True):
+        """
+        Forward pass through the Bayesian MLP.
+
+        Args:
+            x: Input tensor
+            sample: Whether to sample from the posterior (True) or use mean (False)
+        """
+        # Flatten input if needed (for image data)
+        if len(x.shape) > 2:
+            x = x.view(x.size(0), -1)
+
+        # Forward pass through all layers
+        for i, (layer, dropout) in enumerate(zip(self.layers, self.dropouts)):
+            x = layer(x, sample=sample)
+
+            # Apply activation function to all layers except the last (output) layer
+            if i < len(self.layers) - 1:
+                x = F.relu(x)
+                x = dropout(x)
+
+        # Final softmax layer
+        x = F.softmax(x, dim=1)
+        return x
+
+    def kl_divergence(self, prior_mu: float = 0, prior_var: float = 1, mc_samples: int = 10):
+        """
+        Calculate total KL divergence across all layers.
+        """
+        total_kl = 0
+        for layer in self.layers:
+            total_kl += layer.kl_divergence(prior_mu, prior_var, mc_samples)
+        return total_kl
+
+    def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 100):
+        """
+        Make predictions with uncertainty estimates using multiple forward passes.
+
+        Args:
+            x: Input tensor
+            n_samples: Number of forward passes for uncertainty estimation
+
+        Returns:
+            mean_pred: Mean prediction across samples
+            std_pred: Standard deviation across samples (epistemic uncertainty)
+        """
+        self.eval()
+        predictions = []
+
+        with torch.no_grad():
+            for _ in range(n_samples):
+                pred = self.forward(x, sample=True)
+                predictions.append(pred)
+
+        # Stack predictions and compute statistics
+        predictions = torch.stack(predictions)  # (n_samples, batch_size, n_classes)
+
+        mean_pred = predictions.mean(dim=0)
+        std_pred = predictions.std(dim=0)
+
+        return mean_pred, std_pred
+
+    def get_model_info(self):
+        """
+        Get information about the model architecture.
+        """
+        total_params = sum(p.numel() for p in self.parameters())
+        bayesian_params = sum(p.numel() for layer in self.layers for p in layer.parameters())
+
+        info = {
+            "architecture": [self.input_dim] + self.hidden_dims + [self.output_dim],
+            "n_layers": len(self.layers),
+            "n_components_per_layer": self.n_components,
+            "n_samples_per_forward": self.n_samples,
+            "total_parameters": total_params,
+            "bayesian_parameters": bayesian_params,
+            "dropout_rate": self.dropout_rate
+        }
+        return info
+
+    def step(self,
+             learning_rate: float = 0.001,
+             max_norm: float = 5.0,
+             eps: float = 1e-6,
+             method: int = METHOD_IBW) -> None:
+        """
+        Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
+
+        Parameters:
+        - model: The BNN model with mixture components
+        - learning_rate: Base learning rate for all parameters
+        - max_norm: Maximum gradient norm for clipping
+        - eps: Small constant for numerical stability
+        - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_LIN)
+        """
+        # Update means using standard gradient descent
+        with torch.no_grad():
+            d = self.input_dim
+            n = self.n_components
+            for p, param in enumerate(self.mean_params):
+                if param.grad is None:
+                    continue
+
+                # Apply gradient clipping to avoid explosive gradients
+                torch.nn.utils.clip_grad_norm_(param, max_norm)
+
+                if method == METHOD_LIN:
+                    mu = param.data
+                    ek = self.logvar_params[p].data.unsqueeze(1)
+                    if mu.ndim == 3:
+                        ek = ek.unsqueeze(1)
+                    new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
+                    param.data.copy_(new_mu)
+                else:
+                    param.data.add_(param.grad, alpha=-n * learning_rate)
+
+            # Update logvars using variance gradients
+            for param in self.logvar_params:
+                # Convert logvar gradients to variance gradients
+                if method == METHOD_GD:
+                    param.data.add_(param.grad, alpha=-n * learning_rate / d)
+                else:
+                    # If we have logvar, then var = exp(logvar)
+                    # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
+
+                    # Current variance (from logvar)
+                    variance = torch.exp(param.data)
+
+                    # Convert logvar gradient to variance gradient
+                    # dL/dvar = dL/dlogvar * (1/var)
+                    var_grad = param.grad / variance
+
+                    # Apply your update rule in variance space
+                    if method == METHOD_IBW:
+                        # var = var + var_update_factor * var_grad^2
+                        var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
+                        new_variance = var_update * variance
+                    elif method == METHOD_MD:
+                        var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
+                        new_variance = var_update * variance
+                    elif method == METHOD_LIN:
+                        inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
+                        new_variance = 1.0 / inv_new_variance
+                    else:
+                        # no update
+                        new_variance = variance
+
+                    # Convert back to logvar
+                    new_logvar = torch.log(new_variance + eps)
+
+                    # Update the parameter (logvar)
+                    param.data.copy_(new_logvar)

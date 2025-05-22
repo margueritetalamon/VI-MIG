@@ -6,32 +6,45 @@ import torch
 import torch.nn.functional as F
 
 from utils_bnn_torch import (
-    load_mnist,
+    get_device,
+    load_dataset,
     save_and_plot_metrics,
     save_metrics,
     save_model_checkpoint)
+
 from IBNN import (
     METHOD_IBW,
     METHOD_MD,
     METHOD_LIN,
     METHOD_GD,
-    IsotropicSampledMixtureNN)
+    BayesianMLP)
 
 class MargArgs(tap.Tap):
-    method: str = "ibw" # method: ibw, md, lin
-    lr: float = 1e-3 # learning rate
-    n_components: int = 5 # number of gaussians in MOG
-    epochs: int = 10 # number of times we go through the dataset
-    hidden_dim: int = 256
-    save_interval: int = 1  # Save metrics every N epochs
-    save_dir: str = "./results_mnist"  # Directory to save results
-    compile: int = 0 # Whether or not to compile the BNN
+    dataset: str = "" # mnist, cifar10
+    device: str = "cpu" # whether to use CPU or GPU (if available)
     seed: int = 42
+    save_interval: int = 1  # Save metrics every N epochs
+    save_dir: str = "./results"  # Directory to save results
+    method: str = "ibw" # method: ibw, md, lin
+    bs: int = 128 # batch size
+    lr: float = 1e-3 # learning rate
+    epochs: int = 10 # number of times we go through the dataset
+    n_components: int = 5 # number of gaussians in MOG
+    hidden_dims: list[int] = [256]
+    dropout: float = 0.0
+    compile: int = 0 # Whether or not to compile the BNN
 
 args = MargArgs().parse_args()
 
+# First thing: get device.
+# This is important to be first because this sets the default dtype for torch
+if args.device == "gpu":
+    device = get_device()
+else:
+    torch.set_default_dtype(torch.float64)
+    device = torch.device("cpu")
+print(f"Using device: {device}")
 # Set random seed for reproducibility
-torch.set_default_dtype(torch.float64)
 torch.manual_seed(args.seed)
 
 # get method id
@@ -49,11 +62,12 @@ if method < 0:
     raise NotImplementedError
 
 # Create directory to save results if it doesn't exist
-os.makedirs(args.save_dir, exist_ok=True)
+save_dir = os.path.join(args.save_dir, args.dataset)
+os.makedirs(save_dir, exist_ok=True)
 
 # Create a timestamp for this run
 timestamp = datetime.datetime.now().strftime("%Y%m%d_%H%M%S")
-run_dir = os.path.join(args.save_dir, f"{args.method}_{timestamp}")
+run_dir = os.path.join(save_dir, f"{args.method}_{timestamp}")
 os.makedirs(run_dir, exist_ok=True)
 
 # Save hyperparameters
@@ -62,7 +76,7 @@ hyperparams = {
     "learning_rate": args.lr,
     "n_components": args.n_components,
     "epochs": args.epochs,
-    "hidden_dim": args.hidden_dim,
+    "hidden_dims": args.hidden_dims,
     "save_interval": args.save_interval,
     "timestamp": timestamp,
     "pytorch_seed": args.seed
@@ -70,28 +84,28 @@ hyperparams = {
 with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
     json.dump(hyperparams, f, indent=4)
 
-# Save the model configuration
-model_config = {
-    "input_dim": 28 * 28,  # MNIST image size
-    "hidden_dim": args.hidden_dim,
-    "output_dim": 10,      # MNIST has 10 classes
-    "n_components": args.n_components,
-    "n_samples": args.n_components
-}
-with open(os.path.join(run_dir, "model_config.json"), "w") as f:
-    json.dump(model_config, f, indent=4)
-
 # Load dataset
-train_loader, test_loader = load_mnist()
+train_loader, test_loader = load_dataset(args.dataset, args.bs)
+sample_batch, sample_labels = next(iter(train_loader))
+input_dim = sample_batch.view(sample_batch.size(0), -1).size(1)  # Flatten and get feature count
+output_dim = len(torch.unique(sample_labels))  # Number of unique classes in first batch
 
 # Initialize model and optimizer
 n_components = args.n_components
 n_samples = n_components
 
-model = IsotropicSampledMixtureNN(n_components=n_components, n_samples=n_samples, hidden_dim=args.hidden_dim)
+# Define the model
+lr = args.lr
+model = BayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.hidden_dims)
+# Save the model configuration
+model_config = model.get_model_info()
+with open(os.path.join(run_dir, "model_config.json"), "w") as f:
+    json.dump(model_config, f, indent=4)
+
+# Put model to GPU if needed and if possible
+model = model.to(device)
 if args.compile:
     model = torch.compile(model)
-lr = args.lr
 
 # Initialize metrics storage
 metrics = {
@@ -139,6 +153,8 @@ def evaluate_model(model,
     
     with torch.no_grad():
         for data, target in data_loader:
+            data, target = data.to(device), target.to(device)
+
             # Get multiple predictions for robust evaluation
             outputs = []
             kl_divs = []
@@ -184,6 +200,8 @@ def train(model, train_loader, epoch, method):
     correct = 0
     
     for batch_idx, (data, target) in enumerate(train_loader):
+        data, target = data.to(device), target.to(device)
+
         # Zero gradients from previous step
         for param in model.parameters():
             if param.grad is not None:
@@ -239,6 +257,8 @@ def test(model, test_loader, n_samples=10):
     
     with torch.no_grad():
         for data, target in test_loader:
+            data, target = data.to(device), target.to(device)
+
             # Get multiple predictions
             outputs = []
             kl_divs = []
