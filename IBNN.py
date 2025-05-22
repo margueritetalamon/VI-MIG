@@ -147,103 +147,8 @@ class IsotropicSampledMixtureLinear(nn.Module):
             
         return kl_total
 
-class IGMMBayesianBase(nn.Module):
-    def __init__(self):
-        super(IGMMBayesianBase, self).__init__()
-
-    def post_init(self):
-        """
-        This function needs to be called at the end of derived classes' constructor
-        """
-        # Separate parameters based on their type
-        self.mean_params = []
-        self.logvar_params = []
-        self.mixture_params = []
-        for name, param in self.named_parameters():
-            if 'mu' in name:
-                self.mean_params.append(param)
-            elif 'logvar' in name:
-                self.logvar_params.append(param)
-            elif 'mix_logits' in name:
-                self.mixture_params.append(param)
-        assert len(self.mean_params) == len(self.logvar_params)
-
-    def step(self,
-             learning_rate: float = 0.001,
-             grad_clip: float = 5.0,
-             eps: float = 1e-6,
-             method: int = METHOD_IBW) -> None:
-        """
-        Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
-
-        Parameters:
-        - model: The BNN model with mixture components
-        - learning_rate: Base learning rate for all parameters
-        - max_norm: Maximum gradient norm for clipping
-        - eps: Small constant for numerical stability
-        - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_LIN)
-        """
-        # Update means using standard gradient descent
-        with torch.no_grad():
-            d = self.input_dim
-            n = self.n_components
-            for p, param in enumerate(self.mean_params):
-                if param.grad is None:
-                    continue
-
-                # Apply gradient clipping to avoid explosive gradients
-                torch.nn.utils.clip_grad_norm_(param, grad_clip)
-
-                if method == METHOD_LIN:
-                    mu = param.data
-                    ek = self.logvar_params[p].data.unsqueeze(1)
-                    if mu.ndim == 3:
-                        ek = ek.unsqueeze(1)
-                    new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
-                    param.data.copy_(new_mu)
-                else:
-                    param.data.add_(param.grad, alpha=-n * learning_rate)
-
-            # Update logvars using variance gradients
-            for param in self.logvar_params:
-                # Convert logvar gradients to variance gradients
-                if method == METHOD_GD:
-                    param.data.add_(param.grad, alpha=-n * learning_rate / d)
-                else:
-                    # If we have logvar, then var = exp(logvar)
-                    # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
-
-                    # Current variance (from logvar)
-                    variance = torch.exp(param.data)
-
-                    # Convert logvar gradient to variance gradient
-                    # dL/dvar = dL/dlogvar * (1/var)
-                    var_grad = param.grad / variance
-
-                    # Apply your update rule in variance space
-                    if method == METHOD_IBW:
-                        # var = var + var_update_factor * var_grad^2
-                        var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
-                        new_variance = var_update * variance
-                    elif method == METHOD_MD:
-                        var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
-                        new_variance = var_update * variance
-                    elif method == METHOD_LIN:
-                        inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
-                        new_variance = 1.0 / inv_new_variance
-                    else:
-                        # no update
-                        new_variance = variance
-
-                    # Convert back to logvar
-                    new_logvar = torch.log(new_variance + eps)
-
-                    # Update the parameter (logvar)
-                    param.data.copy_(new_logvar)
-
-
 # Multi-Layer Bayesian Neural Network
-class IGMMBayesianMLP(IGMMBayesianBase):
+class IGMMBayesianMLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dims: list, output_dim: int,
                  n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
         """
@@ -289,7 +194,18 @@ class IGMMBayesianMLP(IGMMBayesianBase):
             else:
                 self.dropouts.append(nn.Identity())
 
-        self.post_init()
+        # Separate parameters based on their type
+        self.mean_params = []
+        self.logvar_params = []
+        self.mixture_params = []
+        for name, param in self.named_parameters():
+            if 'mu' in name:
+                self.mean_params.append(param)
+            elif 'logvar' in name:
+                self.logvar_params.append(param)
+            elif 'mix_logits' in name:
+                self.mixture_params.append(param)
+        assert len(self.mean_params) == len(self.logvar_params)
 
     def forward(self, x: torch.Tensor, sample: bool = True):
         """
@@ -370,6 +286,79 @@ class IGMMBayesianMLP(IGMMBayesianBase):
             "dropout_rate": self.dropout_rate
         }
         return info
+
+    def step(self,
+             learning_rate: float = 0.001,
+             grad_clip: float = 5.0,
+             eps: float = 1e-6,
+             method: int = METHOD_IBW) -> None:
+        """
+        Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
+
+        Parameters:
+        - model: The BNN model with mixture components
+        - learning_rate: Base learning rate for all parameters
+        - max_norm: Maximum gradient norm for clipping
+        - eps: Small constant for numerical stability
+        - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_LIN)
+        """
+        # Update means using standard gradient descent
+        with torch.no_grad():
+            d = self.input_dim
+            n = self.n_components
+            for p, param in enumerate(self.mean_params):
+                if param.grad is None:
+                    continue
+
+                # Apply gradient clipping to avoid explosive gradients
+                torch.nn.utils.clip_grad_norm_(param, grad_clip)
+
+                if method == METHOD_LIN:
+                    mu = param.data
+                    ek = self.logvar_params[p].data.unsqueeze(1)
+                    if mu.ndim == 3:
+                        ek = ek.unsqueeze(1)
+                    new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
+                    param.data.copy_(new_mu)
+                else:
+                    param.data.add_(param.grad, alpha=-n * learning_rate)
+
+            # Update logvars using variance gradients
+            for param in self.logvar_params:
+                # Convert logvar gradients to variance gradients
+                if method == METHOD_GD:
+                    param.data.add_(param.grad, alpha=-n * learning_rate / d)
+                else:
+                    # If we have logvar, then var = exp(logvar)
+                    # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
+
+                    # Current variance (from logvar)
+                    variance = torch.exp(param.data)
+
+                    # Convert logvar gradient to variance gradient
+                    # dL/dvar = dL/dlogvar * (1/var)
+                    var_grad = param.grad / variance
+
+                    # Apply your update rule in variance space
+                    if method == METHOD_IBW:
+                        # var = var + var_update_factor * var_grad^2
+                        var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
+                        new_variance = var_update * variance
+                    elif method == METHOD_MD:
+                        var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
+                        new_variance = var_update * variance
+                    elif method == METHOD_LIN:
+                        inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
+                        new_variance = 1.0 / inv_new_variance
+                    else:
+                        # no update
+                        new_variance = variance
+
+                    # Convert back to logvar
+                    new_logvar = torch.log(new_variance + eps)
+
+                    # Update the parameter (logvar)
+                    param.data.copy_(new_logvar)
 
 # Define a Bayesian Convolutional Layer with Sampled Mixture of Isotropic Gaussians
 class IsotropicSampledMixtureConv2d(nn.Module):
@@ -499,7 +488,7 @@ class IsotropicSampledMixtureConv2d(nn.Module):
         return kl_total
 
 # Bayesian CNN Architecture
-class IGMMBayesianCNN(IGMMBayesianBase):
+class IGMMBayesianCNN(nn.Module):
     def __init__(self, input_channels: int = 3, output_dim: int = 10,
                  conv_configs: list = None, fc_dims: list = None,
                  n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
@@ -596,7 +585,17 @@ class IGMMBayesianCNN(IGMMBayesianBase):
             else:
                 self.fc_dropouts.append(nn.Identity())
 
-        self.post_init()
+        # Separate parameters based on their type for custom optimizer
+        self.mean_params = []
+        self.logvar_params = []
+        self.mixture_params = []
+        for name, param in self.named_parameters():
+            if 'mu' in name:
+                self.mean_params.append(param)
+            elif 'logvar' in name:
+                self.logvar_params.append(param)
+            elif 'mix_logits' in name:
+                self.mixture_params.append(param)
 
     def forward(self, x: torch.Tensor, sample: bool = True):
         """Forward pass through the Bayesian CNN."""
@@ -676,3 +675,60 @@ class IGMMBayesianCNN(IGMMBayesianBase):
             "n_fc_layers": len(self.fc_layers)
         }
         return info
+
+    def step(self, learning_rate: float = 0.001, grad_clip: float = 5.0,
+             eps: float = 1e-6, method: int = METHOD_IBW) -> None:
+        """Custom gradient descent optimizer with special update rule for logvar."""
+        with torch.no_grad():
+            # Calculate input dimension for normalization
+            # For CNN, we'll use the total number of parameters as a proxy
+            d = sum(p.numel() for p in self.parameters())
+            n = self.n_components
+
+            # Update means using standard gradient descent
+            for p, param in enumerate(self.mean_params):
+                if param.grad is None:
+                    continue
+
+                torch.nn.utils.clip_grad_norm_(param, grad_clip)
+
+                if method == METHOD_LIN:
+                    mu = param.data
+                    ek = self.logvar_params[p].data
+                    # Handle different tensor shapes
+                    if mu.ndim > 1:
+                        # Reshape ek to broadcast correctly
+                        shape = [1] * mu.ndim
+                        shape[0] = ek.size(0)
+                        ek = ek.view(shape)
+                    
+                    new_mu = mu - n * learning_rate * torch.exp(ek) * param.grad
+                    param.data.copy_(new_mu)
+                else:
+                    param.data.add_(param.grad, alpha=-n * learning_rate)
+
+            # Update logvars using variance gradients
+            for param in self.logvar_params:
+                if param.grad is None:
+                    continue
+                    
+                if method == METHOD_GD:
+                    param.data.add_(param.grad, alpha=-n * learning_rate / d)
+                else:
+                    variance = torch.exp(param.data)
+                    var_grad = param.grad / variance
+
+                    if method == METHOD_IBW:
+                        var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
+                        new_variance = var_update * variance
+                    elif method == METHOD_MD:
+                        var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
+                        new_variance = var_update * variance
+                    elif method == METHOD_LIN:
+                        inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
+                        new_variance = 1.0 / inv_new_variance
+                    else:
+                        new_variance = variance
+
+                    new_logvar = torch.log(new_variance + eps)
+                    param.data.copy_(new_logvar)
