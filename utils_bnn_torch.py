@@ -49,19 +49,12 @@ def load_mnist(batch_size: int = 128):
     test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     return train_loader, test_loader
 
-def load_cifar10(batch_size: int = 128, flatten=False):
+def load_cifar10(batch_size: int = 128):
     # Transform that flattens the images during loading
-    if flatten:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-            transforms.Lambda(lambda x: x.view(-1))  # Flatten from (3,32,32) to (3072,)
-        ])
-    else:
-        transform = transforms.Compose([
-            transforms.ToTensor(),
-            transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
-        ])
+    transform = transforms.Compose([
+        transforms.ToTensor(),
+        transforms.Normalize((0.4914, 0.4822, 0.4465), (0.2023, 0.1994, 0.2010)),
+    ])
 
     download_cifar = True
     if os.path.exists("./data/CIFAR10"):
@@ -78,10 +71,8 @@ def load_cifar10(batch_size: int = 128, flatten=False):
 def load_dataset(dataset_name: str, batch_size: int = 128):
     if dataset_name == "mnist":
         return load_mnist(batch_size)
-    elif dataset_name == "cifar10_flat":
-        return load_cifar10(batch_size, flatten=True)
     elif dataset_name == "cifar10":
-        return load_cifar10(batch_size, flatten=False)
+        return load_cifar10(batch_size)
     else:
         print("Please choose from available datasets: mnist, cifar10")
         raise NotImplementedError

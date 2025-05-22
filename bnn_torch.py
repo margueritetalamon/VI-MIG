@@ -95,19 +95,28 @@ with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
 
 # Load dataset
 train_loader, test_loader = load_dataset(args.dataset, args.bs)
-sample_batch, sample_labels = next(iter(train_loader))
-input_dim = sample_batch.view(sample_batch.size(0), -1).size(1)  # Flatten and get feature count
-output_dim = len(torch.unique(sample_labels))  # Number of unique classes in first batch
 
 # Initialize model and optimizer
 n_components = args.n_components
 n_samples = n_components
 
 # Define the model and the learning rate scheduler
+sample_batch, sample_labels = next(iter(train_loader))
 if args.model == "mlp":
+    input_dim = sample_batch.view(sample_batch.size(0), -1).size(1)  # Flatten and get feature count
+    output_dim = len(torch.unique(sample_labels))  # Number of unique classes in first batch
     model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.fc_dims, dropout_rate=args.dropout)
 elif args.model == "cnn":
-    model = IGMMBayesianCNN(conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components, n_samples=n_samples, dropout_rate=args.dropout)
+    sample_image = sample_batch[0]
+    if len(sample_image.shape) == 3:
+        input_channels, _, _ = sample_batch[0].shape
+    elif len(sample_image.shape) == 2:
+        input_channels = 1
+    else:
+        print("Unexpected data shape")
+        raise RuntimeError
+    output_dim = len(torch.unique(sample_labels))
+    model = IGMMBayesianCNN(input_channels=input_channels,conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components, n_samples=n_samples, dropout_rate=args.dropout)
 # Save the model configuration
 model_config = model.get_model_info()
 print(f"--> Model info:\n {model_config}")
