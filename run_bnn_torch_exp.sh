@@ -38,15 +38,15 @@ run_experiment() {
         --hidden_dim ${hidden_dim} \
         --n_components ${n_components} \
         --save_dir ${BASE_DIR} \
-        --save_interval 1
-        --bs 128
-        --compile 1
-        --warmup_epochs 0
-        --kl_start 1
-        --kl_end 1
-        --device gpu
-        --dataset mnist
-        --dropout 0
+        --save_interval 1 \
+        --bs 128 \
+        --compile 1 \
+        --warmup_epochs 0 \
+        --kl_start 1 \
+        --kl_end 1 \
+        --device gpu \
+        --dataset mnist \
+        --dropout 0 \
         --model mlp
     
     echo "  Finished at: $(date)" | tee -a $LOG_FILE
