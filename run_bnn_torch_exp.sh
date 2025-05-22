@@ -15,7 +15,7 @@ run_experiment() {
     local method=$1
     local lr=$2
     local epochs=$3
-    local hidden_dim=${4:-256}  # Default value is 256
+    local fc_dims=${4:-256}  # Default value is 256
     local n_components=${5:-5}  # Default value is 5
     
     # Create a descriptive name for this experiment
@@ -25,7 +25,7 @@ run_experiment() {
     echo "  Method: ${method}" | tee -a $LOG_FILE
     echo "  Learning rate: ${lr}" | tee -a $LOG_FILE
     echo "  Epochs: ${epochs}" | tee -a $LOG_FILE
-    echo "  Hidden dimension: ${hidden_dim}" | tee -a $LOG_FILE
+    echo "  Hidden dimension: ${fc_dims}" | tee -a $LOG_FILE
     echo "  Number of components: ${n_components}" | tee -a $LOG_FILE
     echo "  Started at: $(date)" | tee -a $LOG_FILE
     
@@ -35,7 +35,7 @@ run_experiment() {
         --method ${method} \
         --lr ${lr} \
         --epochs ${epochs} \
-        --hidden_dim ${hidden_dim} \
+        --fc_dims ${fc_dims} \
         --n_components ${n_components} \
         --save_dir ${BASE_DIR} \
         --save_interval 1 \
