@@ -245,9 +245,9 @@ def train(model, train_loader, epoch, method):
     kl_weight = kl_weight_scheduler(epoch)
     current_lr = lr_scheduler.step(epoch)
 
-    print("\n===============================================================================")
-    print(f'Train Epoch: {epoch}/{args.epochs}\tKL weight: {kl_weight}\tLR: {current_lr}')
-    print("===============================================================================")
+    print("\n==========================================================================================")
+    print(f'Train Epoch: {epoch}/{args.epochs}, KL weight: {kl_weight:.7f}, LR: {current_lr:.7f}')
+    print("==========================================================================================")
     
     for batch_idx, (data, target) in enumerate(train_loader):
         data, target = data.to(device), target.to(device)
