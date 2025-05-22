@@ -39,8 +39,8 @@ class IsotropicSampledMixtureLinear(nn.Module):
         self.mix_logits = nn.Parameter(torch.zeros(n_components)) # will be passed through softmax -> 1/n_components
         
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).uniform(-mu_scale_init, mu_scale_init))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).normal_(-mu_scale_init, mu_scale_init))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).uniform_(-mu_scale_init, mu_scale_init))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).uniform_(-mu_scale_init, mu_scale_init))
         
         # Single scalar log variance parameter for each component (isotropic)
         # One for weights and one for biases per component
@@ -408,8 +408,8 @@ class IsotropicSampledMixtureConv2d(nn.Module):
         self.mix_logits = nn.Parameter(torch.zeros(n_components))
         
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_channels, in_channels, *self.kernel_size).uniform(-mu_scale_init, mu_scale_init))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_channels).normal_(-mu_scale_init, mu_scale_init))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_channels, in_channels, *self.kernel_size).uniform_(-mu_scale_init, mu_scale_init))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_channels).uniform_(-mu_scale_init, mu_scale_init))
         
         # Single scalar log variance parameter for each component (isotropic)
         self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(math.log(var_init)))
