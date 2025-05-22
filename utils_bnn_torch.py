@@ -8,25 +8,29 @@ import json
 from torchvision import datasets, transforms
 
 # Add this near the top of your file, after the imports
-def get_device():
+def get_device(force_cpu: bool = False):
+    if force_cpu:
+        torch.set_default_dtype(torch.float64)
+        device = torch.device("cpu")
+        print("Using CPU.")
+        return device
+
     if torch.cuda.is_available():
         # NVIDIA GPU available (Linux/Windows)
         torch.set_default_dtype(torch.float32)
         device = torch.device("cuda")
         print(f"Using CUDA device: {torch.cuda.get_device_name()}")
-        return device
     elif torch.backends.mps.is_available():
         # Apple Silicon GPU available (macOS)
         torch.set_default_dtype(torch.float32)  # Changed from float64 for consistency
         device = torch.device("mps")
         print("Using MPS device (Apple Silicon)")
-        return device
     else:
         # CPU fallback
-        torch.set_default_dtype(torch.float32)
+        torch.set_default_dtype(torch.float64)
         device = torch.device("cpu")
         print("No GPU found. Using CPU instead.")
-        return device
+    return device
 
 def load_mnist(batch_size: int = 128):
     # Load MNIST dataset

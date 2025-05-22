@@ -38,12 +38,8 @@ args = MargArgs().parse_args()
 
 # First thing: get device.
 # This is important to be first because this sets the default dtype for torch
-if args.device == "gpu":
-    device = get_device()
-else:
-    torch.set_default_dtype(torch.float64)
-    device = torch.device("cpu")
-print(f"Using device: {device}")
+force_cpu = True if args.device == "cpu" else False
+device = get_device(force_cpu)
 # Set random seed for reproducibility
 torch.manual_seed(args.seed)
 
@@ -79,7 +75,8 @@ hyperparams = {
     "hidden_dims": args.hidden_dims,
     "save_interval": args.save_interval,
     "timestamp": timestamp,
-    "pytorch_seed": args.seed
+    "pytorch_seed": args.seed,
+    "pytorch_float": str(torch.get_default_dtype())
 }
 with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
     json.dump(hyperparams, f, indent=4)
