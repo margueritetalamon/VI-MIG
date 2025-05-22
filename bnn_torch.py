@@ -62,6 +62,9 @@ args = MargArgs().parse_args()
 # This is important to be first because this sets the default dtype for torch
 force_cpu = True if args.device == "cpu" else False
 device = get_device(force_cpu)
+non_blocking = True if device == torch.device("cuda") else False
+if device == torch.device("cuda"):
+    print(f"CUDA non-blocking? ", non_blocking)
 # Set random seed for reproducibility
 torch.manual_seed(args.seed)
 
@@ -94,7 +97,7 @@ with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
     json.dump(hyperparams, f, indent=4)
 
 # Load dataset
-train_loader, test_loader = load_dataset(args.dataset, args.bs)
+train_loader, test_loader = load_dataset(device, args.dataset, args.bs)
 
 # Initialize model and optimizer
 n_components = args.n_components
@@ -196,7 +199,9 @@ def evaluate_model(model,
     
     with torch.no_grad():
         for data, target in data_loader:
-            data, target = data.to(device), target.to(device)
+            data = data.to(device, non_blocking=non_blocking)
+            target = target.to(device, non_blocking=non_blocking)
+
 
             # Get multiple predictions for robust evaluation
             outputs = []
@@ -250,7 +255,8 @@ def train(model, train_loader, epoch, method):
     print("==========================================================================================")
     
     for batch_idx, (data, target) in enumerate(train_loader):
-        data, target = data.to(device), target.to(device)
+        data = data.to(device, non_blocking=non_blocking)
+        target = target.to(device, non_blocking=non_blocking)
 
         # Zero gradients from previous step
         for param in model.parameters():
@@ -310,7 +316,9 @@ def test(model, test_loader, epoch, n_samples=10):
     
     with torch.no_grad():
         for data, target in test_loader:
-            data, target = data.to(device), target.to(device)
+            data = data.to(device, non_blocking=non_blocking)
+            target = target.to(device, non_blocking=non_blocking)
+
 
             # Get multiple predictions
             outputs = []
