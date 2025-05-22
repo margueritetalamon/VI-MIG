@@ -42,6 +42,11 @@ class MargArgs(tap.Tap):
     lr_restart: int = 50 # for cosine restart
     epochs: int = 10 # number of times we go through the dataset
     n_components: int = 5 # number of gaussians in MOG
+    mc_samples: int = 5 # MC samples to estimate the KL divergence (ELBO = NLL(q(D|z)) + KL(q(z) || p(z)))
+    mu_scale_init: float = 1.0 # mu weigths are initialized in a uniform distribu between [-a, a], a = mu_scale_init
+    var_init: float = 1.0 # var weigths are initialized using a value var_init
+    prior_mu: float = 0.0 # prior on mu weights
+    prior_var: float = 10.0 # prior on var weights (higher means we care less about prior)
     fc_dims: list[int] = [256] # fully-connect layers dimensions
     conv_configs: list[tuple[int, int, int, int]] = [(32, 3, 1, 1), (64, 3, 1, 1), (128, 3, 1, 1)] # config of convolutionnal layers (#filters, filter size, stride, padding)
     dropout: float = 0.0
@@ -110,7 +115,9 @@ if args.model == "mlp":
     output_dim = len(torch.unique(sample_labels))  # Number of unique classes in first batch
     model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim,
                             n_components=n_components, n_samples=n_samples,
-                            hidden_dims=args.fc_dims, dropout_rate=args.dropout)
+                            hidden_dims=args.fc_dims, dropout_rate=args.dropout,
+                            mu_scale_init=args.mu_scale_init, var_init=args.var_init,
+                            prior_mu=args.prior_mu, prior_var=args.prior_var)
 elif args.model == "cnn":
     sample_image = sample_batch[0]
     if len(sample_image.shape) == 3:
@@ -124,7 +131,8 @@ elif args.model == "cnn":
     output_dim = len(torch.unique(sample_labels))
     model = IGMMBayesianCNN(device=device, input_channels=input_channels, input_height=input_height, input_width=input_width,
                             conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components,
-                            n_samples=n_samples, dropout_rate=args.dropout)
+                            n_samples=n_samples, dropout_rate=args.dropout, mu_scale_init=args.mu_scale_init, var_init=args.var_init,
+                            prior_mu=args.prior_mu, prior_var=args.prior_var)
 # Save the model configuration
 model_config = model.get_model_info()
 print(f"--> Model info:\n {model_config}")
@@ -169,9 +177,10 @@ def elbo_loss(output: torch.Tensor,
               kl_div: torch.Tensor,
               kl_weight: float,
               n_samples: int):
-    # Negative log likelihood
+    # Negative log likelihood (summed over the batch)
     nll = F.cross_entropy(output, target, reduction='sum')
-    # Scale KL divergence by dataset size
+    # The KL divergence is computed once for the whole model (computed once per batch)
+    # So we ccale KL divergence by dataset size, to convert the whole model KL divergence into a "per sample" version
     kl_div = kl_div / n_samples
     # Return negative ELBO (we minimize this)
     return nll + kl_weight * kl_div, nll, kl_div
@@ -264,7 +273,7 @@ def train(model, train_loader, epoch, method):
                 param.grad.zero_()
 
         output = model(data)
-        kl_div = model.kl_divergence(mc_samples=5)  # Use MC sampling for KL
+        kl_div = model.kl_divergence(mc_samples=args.mc_samples)  # Use MC sampling for KL
         loss, nll, kl_div_scaled = elbo_loss(output, target, kl_div, kl_weight, n_samples)
         
         # Calculate accuracy

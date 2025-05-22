@@ -2,6 +2,7 @@ import torch
 import torch.nn as nn
 import torch.nn.functional as F
 from torch.distributions import Categorical
+import math
 
 METHOD_IBW = 0
 METHOD_MD = 1
@@ -10,26 +11,41 @@ METHOD_GD = 3
 
 # Define a Bayesian Layer with Sampled Mixture of Isotropic Gaussians
 class IsotropicSampledMixtureLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, n_components: int = 2, n_samples: int = 5):
+    def __init__(self, in_features: int, out_features: int, n_components: int=2,
+                 n_samples: int=5, mu_scale_init: float=1.0, var_init: float=1.0,
+                 prior_mu: float=0.0, prior_var: float=1.0):
         super(IsotropicSampledMixtureLinear, self).__init__()
+
+        # NLL = Negative log likelihood
+        # Internally, the parameters z of the network follow a distrib q(z).
+        # The forward of the network computes q(D|z) (the likelihood).
+        # We minimize the Negative ELBO(z) = NELBO(z) = NLL(q(D|z)) + KL(q(z) || p(z)),
+        # where p(z) is a **constant** prior on the parameters of the model.
+        # The flatter the gaussian, the less we care about it.
+        #
+        # In our case, because we choose both normal distrib for q(z) and the prior p(z),
+        # there is a closed form for the KL.
         
         # Initialize mixture components parameters
         self.in_features = in_features
         self.out_features = out_features
         self.n_components = n_components
         self.n_samples = n_samples  # Number of components to sample during forward pass
+        # The prior is a gaussian
+        self.prior_mu = prior_mu # mean of the prior
+        self.prior_var = prior_var # mean of the variance
         
         # Mixture weights (probabilities)
-        self.mix_logits = nn.Parameter(torch.zeros(n_components))
+        self.mix_logits = nn.Parameter(torch.zeros(n_components)) # will be passed through softmax -> 1/n_components
         
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 0.1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).normal_(0, 0.1))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).uniform(-mu_scale_init, mu_scale_init))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).normal_(-mu_scale_init, mu_scale_init))
         
         # Single scalar log variance parameter for each component (isotropic)
         # One for weights and one for biases per component
-        self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
-        self.bias_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
+        self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(math.log(var_init)))
+        self.bias_logvar = nn.Parameter(torch.Tensor(n_components).fill_(math.log(var_init)))
         
     def forward(self, x: torch.Tensor, sample: bool = True):
         batch_size = x.size(0)
@@ -95,9 +111,12 @@ class IsotropicSampledMixtureLinear(nn.Module):
                 
         return output
     
-    def kl_divergence(self, prior_mu: int = 0, prior_var: int = 1, mc_samples: int = 10):
+    def kl_divergence(self, mc_samples: int = 10):
         """
         Calculate KL divergence for isotropic Gaussian mixture components.
+        If both the prior and the weights come from gaussians, there is a closed form for the KL(q(z) || p(z)).
+        However, for a Mixture of Gaussians, it's not the case.
+        So we need to use MC sampling to estimate it.
         """
         mix_weights = F.softmax(self.mix_logits, dim=0)
         
@@ -127,16 +146,16 @@ class IsotropicSampledMixtureLinear(nn.Module):
             # We need to account for the number of weight parameters
             n_weight_params = self.weight_mu[idx].numel()
             kl_weights = 0.5 * weight * (
-                n_weight_params * (self.weight_logvar[idx].exp() / prior_var - 1 - self.weight_logvar[idx]) +
-                torch.sum((self.weight_mu[idx] - prior_mu)**2) / prior_var
+                n_weight_params * (self.weight_logvar[idx].exp() / self.prior_var - 1 - self.weight_logvar[idx]) +
+                torch.sum((self.weight_mu[idx] - self.prior_mu)**2) / self.prior_var
             )
             
             # KL for bias - note we're using a scalar variance for all biases
             # We need to account for the number of bias parameters
             n_bias_params = self.bias_mu[idx].numel()
             kl_bias = 0.5 * weight * (
-                n_bias_params * (self.bias_logvar[idx].exp() / prior_var - 1 - self.bias_logvar[idx]) +
-                torch.sum((self.bias_mu[idx] - prior_mu)**2) / prior_var
+                n_bias_params * (self.bias_logvar[idx].exp() / self.prior_var - 1 - self.bias_logvar[idx]) +
+                torch.sum((self.bias_mu[idx] - self.prior_mu)**2) / self.prior_var
             )
             
             kl_total += kl_weights + kl_bias
@@ -150,7 +169,8 @@ class IsotropicSampledMixtureLinear(nn.Module):
 # Multi-Layer Bayesian Neural Network
 class IGMMBayesianMLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dims: list, output_dim: int,
-                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
+                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0,
+                 mu_scale_init: float=1.0, var_init: float=1.0, prior_mu: float=0.0, prior_var: float=1.0):
         """
         Multi-layer Bayesian Neural Network using IsotropicSampledMixtureLinear layers.
 
@@ -184,7 +204,11 @@ class IGMMBayesianMLP(nn.Module):
                 in_features=all_dims[i],
                 out_features=all_dims[i + 1],
                 n_components=n_components,
-                n_samples=n_samples
+                n_samples=n_samples,
+                mu_scale_init=mu_scale_init,
+                var_init=var_init,
+                prio_mu=prior_mu,
+                prior_var=prior_var,
             )
             self.layers.append(layer)
 
@@ -232,13 +256,13 @@ class IGMMBayesianMLP(nn.Module):
         x = F.softmax(x, dim=1)
         return x
 
-    def kl_divergence(self, prior_mu: float = 0, prior_var: float = 1, mc_samples: int = 10):
+    def kl_divergence(self, mc_samples: int = 10):
         """
         Calculate total KL divergence across all layers.
         """
         total_kl = 0
         for layer in self.layers:
-            total_kl += layer.kl_divergence(prior_mu, prior_var, mc_samples)
+            total_kl += layer.kl_divergence(mc_samples)
         return total_kl
 
     def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 100):
@@ -363,7 +387,9 @@ class IGMMBayesianMLP(nn.Module):
 # Define a Bayesian Convolutional Layer with Sampled Mixture of Isotropic Gaussians
 class IsotropicSampledMixtureConv2d(nn.Module):
     def __init__(self, in_channels: int, out_channels: int, kernel_size: int, 
-                 stride: int = 1, padding: int = 0, n_components: int = 2, n_samples: int = 5):
+                 stride: int=1, padding: int=0, n_components: int=2, n_samples: int=5,
+                 mu_scale_init: float=0.0, var_init: float=1.0,
+                 prior_mu: float=0.0, prior_var: float=1.0):
         super(IsotropicSampledMixtureConv2d, self).__init__()
         
         # Initialize mixture components parameters
@@ -374,17 +400,20 @@ class IsotropicSampledMixtureConv2d(nn.Module):
         self.padding = padding
         self.n_components = n_components
         self.n_samples = n_samples
+        # The prior is a gaussian
+        self.prior_mu = prior_mu # mean of the prior
+        self.prior_var = prior_var # mean of the variance
         
         # Mixture weights (probabilities)
         self.mix_logits = nn.Parameter(torch.zeros(n_components))
         
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_channels, in_channels, *self.kernel_size).normal_(0, 0.1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_channels).normal_(0, 0.1))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_channels, in_channels, *self.kernel_size).uniform(-mu_scale_init, mu_scale_init))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_channels).normal_(-mu_scale_init, mu_scale_init))
         
         # Single scalar log variance parameter for each component (isotropic)
-        self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
-        self.bias_logvar = nn.Parameter(torch.Tensor(n_components).fill_(-5))
+        self.weight_logvar = nn.Parameter(torch.Tensor(n_components).fill_(math.log(var_init)))
+        self.bias_logvar = nn.Parameter(torch.Tensor(n_components).fill_(math.log(var_init)))
         
     def forward(self, x: torch.Tensor, sample: bool = True):
         batch_size = x.size(0)
@@ -447,7 +476,7 @@ class IsotropicSampledMixtureConv2d(nn.Module):
                 
         return output
     
-    def kl_divergence(self, prior_mu: int = 0, prior_var: int = 1, mc_samples: int = 10):
+    def kl_divergence(self, mc_samples: int = 10):
         """Calculate KL divergence for isotropic Gaussian mixture components."""
         mix_weights = F.softmax(self.mix_logits, dim=0)
         
@@ -469,15 +498,15 @@ class IsotropicSampledMixtureConv2d(nn.Module):
             # KL for weights
             n_weight_params = self.weight_mu[idx].numel()
             kl_weights = 0.5 * weight * (
-                n_weight_params * (self.weight_logvar[idx].exp() / prior_var - 1 - self.weight_logvar[idx]) +
-                torch.sum((self.weight_mu[idx] - prior_mu)**2) / prior_var
+                n_weight_params * (self.weight_logvar[idx].exp() / self.prior_var - 1 - self.weight_logvar[idx]) +
+                torch.sum((self.weight_mu[idx] - self.prior_mu)**2) / self.prior_var
             )
             
             # KL for bias
             n_bias_params = self.bias_mu[idx].numel()
             kl_bias = 0.5 * weight * (
-                n_bias_params * (self.bias_logvar[idx].exp() / prior_var - 1 - self.bias_logvar[idx]) +
-                torch.sum((self.bias_mu[idx] - prior_mu)**2) / prior_var
+                n_bias_params * (self.bias_logvar[idx].exp() / self.prior_var - 1 - self.bias_logvar[idx]) +
+                torch.sum((self.bias_mu[idx] - self.prior_mu)**2) / self.prior_var
             )
             
             kl_total += kl_weights + kl_bias
@@ -491,7 +520,8 @@ class IsotropicSampledMixtureConv2d(nn.Module):
 class IGMMBayesianCNN(nn.Module):
     def __init__(self, device, input_channels: int, input_width: int, input_height: int, output_dim: int,
                  conv_configs: list = None, fc_dims: list = None,
-                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
+                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0,
+                 mu_scale_init: float=1.0, var_init: float=1.0, prior_mu: float=0.0, prior_var: float=1.0):
         """
         Bayesian CNN using IsotropicSampledMixture layers.
 
@@ -543,7 +573,11 @@ class IGMMBayesianCNN(nn.Module):
                 stride=stride,
                 padding=padding,
                 n_components=n_components,
-                n_samples=n_samples
+                n_samples=n_samples,
+                mu_scale_init=mu_scale_init,
+                var_init=var_init,
+                prio_mu=prior_mu,
+                prior_var=prior_var
             )
             self.conv_layers.append(conv_layer)
             
@@ -650,17 +684,17 @@ class IGMMBayesianCNN(nn.Module):
         x = F.softmax(x, dim=1)
         return x
 
-    def kl_divergence(self, prior_mu: float = 0, prior_var: float = 1, mc_samples: int = 10):
+    def kl_divergence(self, mc_samples: int = 10):
         """Calculate total KL divergence across all layers."""
         total_kl = 0
         
         # KL from conv layers
         for layer in self.conv_layers:
-            total_kl += layer.kl_divergence(prior_mu, prior_var, mc_samples)
+            total_kl += layer.kl_divergence(mc_samples)
         
         # KL from FC layers
         for layer in self.fc_layers:
-            total_kl += layer.kl_divergence(prior_mu, prior_var, mc_samples)
+            total_kl += layer.kl_divergence(mc_samples)
         
         return total_kl
 
