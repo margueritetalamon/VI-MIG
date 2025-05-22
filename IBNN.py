@@ -676,7 +676,7 @@ class IGMMBayesianCNN(nn.Module):
         }
         return info
 
-    def step(self, learning_rate: float = 0.001, max_norm: float = 5.0, 
+    def step(self, learning_rate: float = 0.001, grad_clip: float = 5.0,
              eps: float = 1e-6, method: int = METHOD_IBW) -> None:
         """Custom gradient descent optimizer with special update rule for logvar."""
         with torch.no_grad():
@@ -690,7 +690,7 @@ class IGMMBayesianCNN(nn.Module):
                 if param.grad is None:
                     continue
 
-                torch.nn.utils.clip_grad_norm_(param, max_norm)
+                torch.nn.utils.clip_grad_norm_(param, grad_clip)
 
                 if method == METHOD_LIN:
                     mu = param.data

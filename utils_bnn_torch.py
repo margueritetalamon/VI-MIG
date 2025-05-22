@@ -228,3 +228,67 @@ def save_and_plot_metrics(method, metrics, hyperparams, run_dir):
         f.write(f"  Best Test ELBO: {best_test_elbo:.4f} (Epoch {best_test_elbo_epoch})\n")
 
     print(f"Training summary saved to {os.path.join(run_dir, 'training_summary.txt')}")
+
+class LearningRateScheduler:
+    """Custom learning rate scheduler with multiple scheduling strategies."""
+    
+    def __init__(self, initial_lr, total_epochs, scheduler_type='cosine', **kwargs):
+        self.initial_lr = initial_lr
+        self.current_lr = initial_lr
+        self.total_epochs = total_epochs
+        self.scheduler_type = scheduler_type
+        self.kwargs = kwargs
+        
+        # Extract common parameters
+        self.min_lr = kwargs.get('min_lr', 0.0)
+        self.warmup_epochs = kwargs.get('warmup_epochs', 0)
+        
+        # For step scheduler
+        self.decay_epochs = kwargs.get('lr_decay_epochs', [])
+        self.decay_factor = kwargs.get('lr_decay_factor', 0.1)
+        
+        # For cosine restart
+        self.restart_period = kwargs.get('restart_period', 50)
+        
+    def get_lr(self, epoch):
+        """Get learning rate for given epoch."""
+        # Linear warmup
+        if epoch < self.warmup_epochs:
+            return self.initial_lr * (epoch + 1) / self.warmup_epochs
+        
+        # Adjust epoch for post-warmup scheduling
+        effective_epoch = epoch - self.warmup_epochs
+        effective_total = self.total_epochs - self.warmup_epochs
+        
+        if self.scheduler_type == 'cosine':
+            return self._cosine_annealing(effective_epoch, effective_total)
+        elif self.scheduler_type == 'cosine_restart':
+            return self._cosine_annealing_restart(effective_epoch)
+        elif self.scheduler_type == 'step':
+            return self._step_decay(epoch)
+        else:
+            return self.initial_lr
+    
+    def _cosine_annealing(self, epoch, total_epochs):
+        """Standard cosine annealing."""
+        return self.min_lr + (self.initial_lr - self.min_lr) * \
+               (1 + np.cos(np.pi * epoch / total_epochs)) / 2
+    
+    def _cosine_annealing_restart(self, epoch):
+        """Cosine annealing with warm restarts."""
+        cycle_epoch = epoch % self.restart_period
+        return self.min_lr + (self.initial_lr - self.min_lr) * \
+               (1 + np.cos(np.pi * cycle_epoch / self.restart_period)) / 2
+    
+    def _step_decay(self, epoch):
+        """Step decay at specified epochs."""
+        lr = self.initial_lr
+        for decay_epoch in self.decay_epochs:
+            if epoch >= decay_epoch:
+                lr *= self.decay_factor
+        return lr
+    
+    def step(self, epoch):
+        """Update learning rate for given epoch."""
+        self.current_lr = self.get_lr(epoch)
+        return self.current_lr
