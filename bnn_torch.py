@@ -42,6 +42,7 @@ class MargArgs(tap.Tap):
     lr_restart: int = 50 # for cosine restart
     epochs: int = 10 # number of times we go through the dataset
     n_components: int = 5 # number of gaussians in MOG
+    # NOTE: we call ELBO the Negative ELBO
     mc_samples: int = 5 # MC samples to estimate the KL divergence (ELBO = NLL(q(D|z)) + KL(q(z) || p(z)))
     mu_scale_init: float = 1.0 # mu weigths are initialized in a uniform distribu between [-a, a], a = mu_scale_init
     var_init: float = 1.0 # var weigths are initialized using a value var_init
@@ -283,7 +284,10 @@ def train(model, train_loader, epoch, method):
         # Accumulate metrics
         train_loss += loss.item()
         train_nll_total += nll.item()
-        train_kl_div_total += kl_div.item()
+        # The KL is a computation that "should" be done once, for the whole model.
+        # But we do it once per batch.
+        # So we accumulate the KL, and after the training loop, we divide by the number of samples
+        train_kl_div_total += kl_div.item() # we accumulate the KL
         
         loss.backward()
         model.step(learning_rate=current_lr, method=method, grad_clip=args.grad_clip)
@@ -302,10 +306,10 @@ def train(model, train_loader, epoch, method):
     metrics['train_accuracy'].append(accuracy)
     metrics['train_kl_div'].append(avg_kl_div)
     metrics['train_nll'].append(avg_nll)
-    metrics['train_elbo'].append(-(avg_nll + avg_kl_div))  # Negative loss is ELBO
+    metrics['train_elbo'].append(avg_nll + avg_kl_div)  # Negative ELBO
     
     print(f'====> Epoch: {epoch}/{args.epochs} Average loss: {avg_loss:.4f}, '
-          f'NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
+          f'ELBO: {(avg_nll + avg_kl_div):.4f}, NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
           f'Accuracy: {accuracy:.4f}')
     
     return avg_loss, avg_nll, avg_kl_div, accuracy
@@ -372,10 +376,10 @@ def test(model, test_loader, epoch, n_samples=10):
     metrics['test_accuracy'].append(accuracy)
     metrics['test_kl_div'].append(avg_kl_div)
     metrics['test_nll'].append(avg_nll)
-    metrics['test_elbo'].append(-(avg_nll + avg_kl_div))  # Negative loss is ELBO
+    metrics['test_elbo'].append(avg_nll + avg_kl_div)  # Negative loss is ELBO
     
     print(f'Test set: Average loss: {avg_loss:.4f}, '
-          f'NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
+          f'ELBO: {(avg_nll + avg_kl_div):.4f}, NLL: {avg_nll:.4f}, KL: {avg_kl_div:.4f}, '
           f'Accuracy: {accuracy:.4f} ({correct}/{n_test})')
     
     return avg_loss, avg_nll, avg_kl_div, accuracy, uncertainties
@@ -399,15 +403,15 @@ if not args.skip_pretraining:
     metrics['train_accuracy'].append(train_accuracy)
     metrics['train_kl_div'].append(train_kl_div)
     metrics['train_nll'].append(train_nll)
-    metrics['train_elbo'].append(-(train_nll + train_kl_div))
+    metrics['train_elbo'].append(train_nll + train_kl_div)
     metrics['test_accuracy'].append(test_accuracy)
     metrics['test_kl_div'].append(test_kl_div)
     metrics['test_nll'].append(test_nll)
-    metrics['test_elbo'].append(-(test_nll + test_kl_div))
+    metrics['test_elbo'].append(test_nll + test_kl_div)
 
     print(f"Initial metrics before training:")
-    print(f"  Train accuracy: {train_accuracy:.4f}, ELBO: {-(train_nll + train_kl_div):.4f}")
-    print(f"  Test accuracy: {test_accuracy:.4f}, ELBO: {-(test_nll + test_kl_div):.4f}")
+    print(f"  Train accuracy: {train_accuracy:.4f}, ELBO: {train_nll + train_kl_div:.4f}")
+    print(f"  Test accuracy: {test_accuracy:.4f}, ELBO: {test_nll + test_kl_div:.4f}")
 
     # Save initial metrics
     save_metrics(0, metrics, run_dir)
