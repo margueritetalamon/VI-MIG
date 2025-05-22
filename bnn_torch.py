@@ -4,6 +4,7 @@ import json
 import datetime
 import torch
 import torch.nn.functional as F
+import ast
 
 from utils_bnn_torch import (
     get_device,
@@ -20,6 +21,9 @@ from IBNN import (
     IGMMBayesianMLP,
     IGMMBayesianCNN)
 
+def parse_tuple(s: str) -> tuple[int, int, int, int]:
+    return ast.literal_eval(s)
+
 class MargArgs(tap.Tap):
     dataset: str = "" # mnist, cifar10, cifar10_flat
     device: str = "cpu" # whether to use CPU or GPU (if available)
@@ -33,9 +37,13 @@ class MargArgs(tap.Tap):
     epochs: int = 10 # number of times we go through the dataset
     n_components: int = 5 # number of gaussians in MOG
     fc_dims: list[int] = [256] # fully-connect layers dimensions
-    conv_configs: list[tuple[int]] = [(32, 3, 1, 1), (64, 3, 1, 1), (128, 3, 1, 1)] # config of convolutionnal layers (#filters, filter size, stride, padding)
+    conv_configs: list[tuple[int, int, int, int]] = [(32, 3, 1, 1), (64, 3, 1, 1), (128, 3, 1, 1)] # config of convolutionnal layers (#filters, filter size, stride, padding)
     dropout: float = 0.0
     compile: int = 0 # Whether or not to compile the BNN
+
+    def configure(self):
+        # Usage: --conv_configs "(32, 3, 1, 1)" "(64, 3, 1, 1)" "(128, 3, 1, 1)"
+        self.add_argument('--conv_configs', type=parse_tuple, nargs='+')
 
 args = MargArgs().parse_args()
 
