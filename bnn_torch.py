@@ -145,9 +145,9 @@ lr_scheduler = LearningRateScheduler(args.lr, args.epochs, args.lr_scheduler,
                                      lr_decay_factor=args.lr_decay_factor, restart_period=args.lr_restart)
 
 # Put model to GPU if needed and if possible
-model = model.to(device)
 if args.compile:
     model = torch.compile(model)
+model = model.to(device)
 
 # Initialize metrics storage
 metrics = {
