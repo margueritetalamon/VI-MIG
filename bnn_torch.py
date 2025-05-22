@@ -105,18 +105,23 @@ sample_batch, sample_labels = next(iter(train_loader))
 if args.model == "mlp":
     input_dim = sample_batch.view(sample_batch.size(0), -1).size(1)  # Flatten and get feature count
     output_dim = len(torch.unique(sample_labels))  # Number of unique classes in first batch
-    model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.fc_dims, dropout_rate=args.dropout)
+    model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim,
+                            n_components=n_components, n_samples=n_samples,
+                            hidden_dims=args.fc_dims, dropout_rate=args.dropout)
 elif args.model == "cnn":
     sample_image = sample_batch[0]
     if len(sample_image.shape) == 3:
-        input_channels, _, _ = sample_batch[0].shape
+        input_channels, input_height, input_width = sample_batch[0].shape
     elif len(sample_image.shape) == 2:
         input_channels = 1
+        input_height, input_width = sample_image.shape
     else:
         print("Unexpected data shape")
         raise RuntimeError
     output_dim = len(torch.unique(sample_labels))
-    model = IGMMBayesianCNN(input_channels=input_channels,conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components, n_samples=n_samples, dropout_rate=args.dropout)
+    model = IGMMBayesianCNN(device=device, input_channels=input_channels, input_height=input_height, input_width=input_width,
+                            conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components,
+                            n_samples=n_samples, dropout_rate=args.dropout)
 # Save the model configuration
 model_config = model.get_model_info()
 print(f"--> Model info:\n {model_config}")
@@ -124,7 +129,9 @@ with open(os.path.join(run_dir, "model_config.json"), "w") as f:
     json.dump(model_config, f, indent=4)
 
 # Learning rate scheduler
-lr_scheduler = LearningRateScheduler(args.lr, args.epochs, args.lr_scheduler, min_lr=args.lr_min, lr_decay_epochs=args.lr_decay_epochs, lr_decay_factor=args.lr_decay_factor, restart_period=args.lr_restart)
+lr_scheduler = LearningRateScheduler(args.lr, args.epochs, args.lr_scheduler,
+                                     min_lr=args.lr_min, lr_decay_epochs=args.lr_decay_epochs,
+                                     lr_decay_factor=args.lr_decay_factor, restart_period=args.lr_restart)
 
 # Put model to GPU if needed and if possible
 model = model.to(device)

@@ -489,7 +489,7 @@ class IsotropicSampledMixtureConv2d(nn.Module):
 
 # Bayesian CNN Architecture
 class IGMMBayesianCNN(nn.Module):
-    def __init__(self, input_channels: int = 3, output_dim: int = 10,
+    def __init__(self, device, input_channels: int, input_width: int, input_height: int, output_dim: int,
                  conv_configs: list = None, fc_dims: list = None,
                  n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0):
         """
@@ -507,6 +507,8 @@ class IGMMBayesianCNN(nn.Module):
         super(IGMMBayesianCNN, self).__init__()
 
         self.input_channels = input_channels
+        self.input_height = input_height
+        self.input_width = input_width
         self.output_dim = output_dim
         self.n_components = n_components
         self.n_samples = n_samples
@@ -557,11 +559,14 @@ class IGMMBayesianCNN(nn.Module):
             current_channels = out_channels
 
         # Adaptive pooling to handle variable input sizes
-        self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
-        
-        # Calculate the flattened size after conv layers
-        # This will be current_channels * 4 * 4 due to adaptive pooling
-        flattened_size = current_channels * 4 * 4
+        if device != torch.device("mps"): # adaptive pooling not working on macos
+            self.adaptive_pool = nn.AdaptiveAvgPool2d((4, 4))
+            # Calculate the flattened size after conv layers
+            # This will be current_channels * 4 * 4 due to adaptive pooling
+            flattened_size = current_channels * 4 * 4
+        else:
+            self.adaptive_pool = None
+            flattened_size = self._calculate_flattened_size(input_channels, conv_configs, input_height, input_width)
 
         # Build fully connected layers
         self.fc_layers = nn.ModuleList()
@@ -597,6 +602,27 @@ class IGMMBayesianCNN(nn.Module):
             elif 'mix_logits' in name:
                 self.mixture_params.append(param)
 
+    def _calculate_flattened_size(self, input_channels, conv_configs, input_height, input_width):
+        """Calculate flattened size for any CNN architecture."""
+        current_channels = input_channels
+        height = input_height
+        width = input_width
+        
+        for out_channels, kernel_size, stride, padding in conv_configs:
+            # You might want to validate channel progression here
+            if current_channels <= 0:
+                raise ValueError(f"Invalid channel count: {current_channels}")
+            
+            current_channels = out_channels  # Update for next layer
+            
+            # Calculate spatial dimensions
+            height = (height + 2 * padding - kernel_size) // stride + 1
+            width = (width + 2 * padding - kernel_size) // stride + 1
+            height = height // 2
+            width = width // 2
+        
+        return current_channels * height * width
+
     def forward(self, x: torch.Tensor, sample: bool = True):
         """Forward pass through the Bayesian CNN."""
         # Convolutional layers
@@ -607,7 +633,8 @@ class IGMMBayesianCNN(nn.Module):
             x = dropout(x)
 
         # Adaptive pooling and flatten
-        x = self.adaptive_pool(x)
+        if self.adaptive_pool is not None:
+            x = self.adaptive_pool(x)
         x = x.view(x.size(0), -1)
 
         # Fully connected layers
