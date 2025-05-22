@@ -207,7 +207,7 @@ class IGMMBayesianMLP(nn.Module):
                 n_samples=n_samples,
                 mu_scale_init=mu_scale_init,
                 var_init=var_init,
-                prio_mu=prior_mu,
+                prior_mu=prior_mu,
                 prior_var=prior_var,
             )
             self.layers.append(layer)
@@ -576,7 +576,7 @@ class IGMMBayesianCNN(nn.Module):
                 n_samples=n_samples,
                 mu_scale_init=mu_scale_init,
                 var_init=var_init,
-                prio_mu=prior_mu,
+                prior_mu=prior_mu,
                 prior_var=prior_var
             )
             self.conv_layers.append(conv_layer)
