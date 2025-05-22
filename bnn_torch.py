@@ -17,20 +17,23 @@ from IBNN import (
     METHOD_MD,
     METHOD_LIN,
     METHOD_GD,
-    IGMMBayesianMLP)
+    IGMMBayesianMLP,
+    IGMMBayesianCNN)
 
 class MargArgs(tap.Tap):
-    dataset: str = "" # mnist, cifar10
+    dataset: str = "" # mnist, cifar10, cifar10_flat
     device: str = "cpu" # whether to use CPU or GPU (if available)
     seed: int = 42
     save_interval: int = 1  # Save metrics every N epochs
     save_dir: str = "./results"  # Directory to save results
     method: str = "ibw" # method: ibw, md, lin
+    model: str = "mlp" # model: mlp, cnn
     bs: int = 128 # batch size
     lr: float = 1e-3 # learning rate
     epochs: int = 10 # number of times we go through the dataset
     n_components: int = 5 # number of gaussians in MOG
-    hidden_dims: list[int] = [256]
+    fc_dims: list[int] = [256] # fully-connect layers dimensions
+    conv_configs: list[tuple[int]] = [(32, 3, 1, 1), (64, 3, 1, 1), (128, 3, 1, 1)] # config of convolutionnal layers (#filters, filter size, stride, padding)
     dropout: float = 0.0
     compile: int = 0 # Whether or not to compile the BNN
 
@@ -72,7 +75,7 @@ hyperparams = {
     "learning_rate": args.lr,
     "n_components": args.n_components,
     "epochs": args.epochs,
-    "hidden_dims": args.hidden_dims,
+    "fc_dims": args.fc_dims,
     "save_interval": args.save_interval,
     "timestamp": timestamp,
     "pytorch_seed": args.seed,
@@ -93,7 +96,10 @@ n_samples = n_components
 
 # Define the model
 lr = args.lr
-model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.hidden_dims)
+if args.model == "mlp":
+    model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim, n_components=n_components, n_samples=n_samples, hidden_dims=args.fc_dims, dropout_rate=args.dropout)
+elif args.model == "cnn":
+    model = IGMMBayesianCNN(conv_configs=args.conv_configs, fc_dims=args.fc_dims, output_dim=output_dim, n_components=n_components, n_samples=n_samples, dropout_rate=args.dropout)
 # Save the model configuration
 model_config = model.get_model_info()
 print(f"--> Model info:\n {model_config}")
