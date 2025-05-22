@@ -39,6 +39,15 @@ run_experiment() {
         --n_components ${n_components} \
         --save_dir ${BASE_DIR} \
         --save_interval 1
+        --bs 128
+        --compile 1
+        --warmup_epochs 0
+        --kl_start 1
+        --kl_end 1
+        --device gpu
+        --dataset mnist
+        --dropout 0
+        --model mlp
     
     echo "  Finished at: $(date)" | tee -a $LOG_FILE
     echo "---------------------------------------------" | tee -a $LOG_FILE
@@ -55,18 +64,15 @@ echo "Running all experiments sequentially..." | tee -a $LOG_FILE
 
 # Method: ibw
 echo "Running IBW experiments..." | tee -a $LOG_FILE
-run_experiment "ibw" "1e-3" 50
-run_experiment "ibw" "1e-4" 70
+run_experiment "ibw" "1e-3" 100
 
 # Method: md
 echo "Running MD experiments..." | tee -a $LOG_FILE
-run_experiment "md" "1e-3" 50
-run_experiment "md" "1e-4" 70
+run_experiment "md" "1e-3" 100
 
 # Method: lin
 echo "Running LIN experiments..." | tee -a $LOG_FILE
-run_experiment "lin" "1e-3" 50
-run_experiment "lin" "1e-4" 70
+run_experiment "lin" "1e-3" 100
 
 # Summary
 echo "All experiments completed at $(date)" | tee -a $LOG_FILE
