@@ -17,7 +17,7 @@ def get_device(force_cpu: bool = False):
 
     if torch.cuda.is_available():
         # NVIDIA GPU available (Linux/Windows)
-        torch.set_default_dtype(torch.float32)
+        torch.set_default_dtype(torch.float64)
         device = torch.device("cuda")
         print(f"Using CUDA device: {torch.cuda.get_device_name()}")
     elif torch.backends.mps.is_available():
@@ -32,7 +32,7 @@ def get_device(force_cpu: bool = False):
         print("No GPU found. Using CPU instead.")
     return device
 
-def load_mnist(batch_size: int = 128):
+def load_mnist(device, batch_size: int = 128):
     # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -45,11 +45,19 @@ def load_mnist(batch_size: int = 128):
     train_dataset = datasets.MNIST('./data', train=True, download=download_mnist, transform=transform)
     test_dataset = datasets.MNIST('./data', train=False, transform=transform)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    if device != torch.device("cuda"):
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    else:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   prefetch_factor=2, drop_last=True)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   prefetch_factor=2, drop_last=True)
     return train_loader, test_loader
 
-def load_cifar10(batch_size: int = 128):
+def load_cifar10(device, batch_size: int = 128):
     # Transform that flattens the images during loading
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -63,16 +71,24 @@ def load_cifar10(batch_size: int = 128):
     train_dataset = datasets.CIFAR10('./data', train=True, download=download_cifar, transform=transform)
     test_dataset = datasets.CIFAR10('./data', train=False, transform=transform)
 
-    train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
-    test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    if device != torch.device("cuda"):
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
+    else:
+        train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
+                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   prefetch_factor=2, drop_last=True)
+        test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
+                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   prefetch_factor=2, drop_last=True)
     
     return train_loader, test_loader
 
-def load_dataset(dataset_name: str, batch_size: int = 128):
+def load_dataset(device, dataset_name: str, batch_size: int = 128):
     if dataset_name == "mnist":
-        return load_mnist(batch_size)
+        return load_mnist(device, batch_size)
     elif dataset_name == "cifar10":
-        return load_cifar10(batch_size)
+        return load_cifar10(device, batch_size)
     else:
         print("Please choose from available datasets: mnist, cifar10")
         raise NotImplementedError
