@@ -146,17 +146,12 @@ metrics = {
     'test_elbo': []
 }
 
-# KL warmup
-warmup_epochs = args.warmup_epochs
-kl_start = args.kl_start
-kl_end = args.kl_start
-
-def kl_weight_scheduler(epoch):
+def kl_weight_scheduler(epoch: int):
     """Gradually increase KL weight during warmup."""
-    if epoch < warmup_epochs:
-        return kl_start + (kl_end - kl_start) * (epoch / warmup_epochs)
+    if epoch - 1 < args.warmup_epochs: # -1 because training starts at 1
+        return args.kl_start + (args.kl_end - args.kl_start) * (float(epoch - 1) / float(args.warmup_epochs))
     else:
-        return kl_end
+        return args.kl_end
 
 # ELBO loss function
 def elbo_loss(output: torch.Tensor,
