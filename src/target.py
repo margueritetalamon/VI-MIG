@@ -3,6 +3,7 @@ from src.logreg import LogReg, MultiClassLogReg
 from src.linreg import LinReg, LinReg_BNN
 
 from src.funnel import Funnel
+from src.heavier_tails import HeavyTails
 
 from matplotlib import  pyplot as plt
 import numpy as np 
@@ -30,6 +31,10 @@ class Target:
 
         elif self.name == "funnel":
             self.model = Funnel()
+
+        elif self.name == "ht":
+            self.model = HeavyTails(mode = mode)
+        
 
 
         # elif self.name == "bnn":
@@ -74,7 +79,7 @@ class Target:
                 Z = self.model.prob(pos)
 
                 if self.name in ["funnel",  "logreg", "mlogreg"]:
-                    Z = rearrange(Z, "(h w) -> h w", h  = grid_size)
+                    Z = rearrange(Z, "(h w)-> h w", h  = grid_size)
 
                     if self.name in ["logreg", "mlogreg"]:
                         Z = Z/Z.sum()
@@ -82,7 +87,8 @@ class Target:
                 if self.name == "gmm":
                     Z = Z[:,0,:]
                 print(Z.shape)
-
+                if self.name == "ht":
+                    Z = Z[..., 0]
                 ax.contour(X, Y, Z, levels=20, cmap="viridis")
                 self.contours = (X,Y,Z)
 
@@ -98,9 +104,8 @@ class Target:
 
             if not self.name == "gmm": 
                 return 
-            bounds = (-10,10)
             
-            fig, ax = self.model.compute_marginals(fig = None, axes = None, bounds = bounds, grid_size=grid_size, ncols=ncols , label = label, color=color, lw = lw)
+            fig, ax = self.model.compute_marginals(fig = None, axes = None,  x1= x1,x2 = x2, grid_size=grid_size, ncols=ncols , label = label, color=color, lw = lw)
 
 
         return fig, ax

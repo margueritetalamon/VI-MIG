@@ -1,7 +1,8 @@
-from sklearn.datasets import load_breast_cancer
+from sklearn.datasets import load_breast_cancer, fetch_covtype
 from ucimlrepo import fetch_ucirepo 
 import numpy as np
 import pandas as pd 
+import os 
 
 
    
@@ -37,11 +38,19 @@ def prepare_dataset(name, train_ratio = 0.6):
         y = y.values
 
     if name == "covertype":
+        if os.path.exists("covtype/X.npy") and os.path.exists("covtype/y.npy"):
+            X = np.load("covtype/X.npy")
+            y = np.load("covtype/y.npy")[:, None]
 
-        covertype = fetch_ucirepo(id=31) 
-        
-        X = covertype.data.features.values
-        y = covertype.data.targets.values - 1 ##  to 1,2.., K to 0,1,2, K-1
+        else:
+            covertype = fetch_covtype()
+            X = covertype.data
+            y = covertype.target - 1 ##  to 1,2.., K to 0,1,2, K-1
+            os.mkdir("covtype")
+            np.save("covtype/X.npy", X)
+            np.save("covtype/y.npy", y)
+    
+    
 
     if name == "boston":
 
