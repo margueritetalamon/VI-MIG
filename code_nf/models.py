@@ -6,7 +6,7 @@ Density estimation using Real NVP
 Laurent Dinh, Jascha Sohl-Dickstein, Samy Bengio
 arXiv:1605.08803
 '''
-
+### This code comes from https://github.com/marylou-gabrie/tutorial-sampling-enhanced-w-generative-models.git
 import numpy as np
 import torch
 import torch.nn as nn
