@@ -213,16 +213,8 @@ class LinReg_BNN:
 
     def log_likelihood(self, theta): ###  log likelihood for the parameter theta theta of  shape B, d
 
-        # w , sigma = self.unpack(theta)
-
-        # logits = self.neural_network.forward(w, self.X) # B, n , 
-        # print("samles", theta.shape)
         logits  = self.neural_network.forward(theta, self.X)
-        # print("logits", logits.shape)
-
-        # lll = (-((self.y - logits)**2)/(2*sigma[:, None]**2) - np.log(2*np.pi * sigma[:, None]**2)/2).sum(axis = -1)
         lll = (-((self.y - logits)**2)/(2*self.sigma) - np.log(2*np.pi*self.sigma)/2).sum(axis = -1)
-
         return lll
     
     def unpack(self, theta):
@@ -232,9 +224,6 @@ class LinReg_BNN:
         """
         w = theta[:, :self.bnn_dim]
         sigma = theta[:, -1]
-        
-        # unpack the W,v,b from w as you had before
-        # W, v, b = self.neural_network.unpack_params(w)
         return w, sigma
 
     
@@ -242,56 +231,19 @@ class LinReg_BNN:
         ### theta can be a sample so of shape B, d
         X,y  = self.batchized_data()
         n = X.shape[0]
-
-        # w, sigma = self.unpack(theta)
-
-        # logits = self.neural_network.forward(w, X) # B, n_samples
-        # resid = (y - logits)
-        # gradients_bnn_w = self.neural_network.compute_gradients(w, X) # B, n , dim_params
-        # gradient_sigma = (resid**2 ).sum(axis = -1) / (sigma**3) - n/sigma 
-
-        # gradient_w = (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
-
-
-        # gradients = np.concatenate([gradient_w, gradient_sigma[:,None]], axis=1)
-        # print("samles", theta.shape)
-    
         logits = self.neural_network.forward(theta, X) # B, n_samples
-        # print("LOGITS",logits.shape)
         resid = (y - logits)
-        # print("resid", resid.shape)
         gradients_bnn_w = self.neural_network.compute_gradients(theta, X) #  B, n , dim_params
-        # print("grad BNN", gradients_bnn_w.shape)
-
-        # gradients= (resid[..., None]*gradients_bnn_w/self.prior_eps).sum(axis = 1)
         gradients= (resid[..., None]*gradients_bnn_w/self.sigma).sum(axis = 1)
-        # print("grad LL", gradients.shape)
-
-
-
-
-        
+  
         return gradients ### shape  B, dim_params
     
     def grad_log_prior(self, theta):
-        ### theta of shape B,d 
-        # w, sigma = self.unpack(theta)
-        # grad_w = - (w - self.prior_mean)/self.prior_eps
-        # grad_sigma  = (self.alpha_sigma-1)/sigma - self.lambda_sigma
-
-        # gradients = np.concatenate([grad_w, grad_sigma[:,None]], axis=1)
-
         gradients = - (theta - self.prior_mean)/self.prior_eps
-        # print("grad prior", gradients.shape)
-
-
-
         return gradients
     
         
     def gradient_log_density(self, theta): 
-        ### theta can be a sample so of shape B, d
-
         return self.gradient_log_likelihood(theta) + self.grad_log_prior(theta)
     
 
@@ -301,15 +253,10 @@ class LinReg_BNN:
 
 
     def log_prob(self, theta): ###  log density of the posterior UNORMALIZED
-        
-        # w, sigma = self.unpack(theta)
-        # return self.log_likelihood(theta) + self.prior.logpdf(w) + self.prior_sigma.logpdf(sigma)
         return self.log_likelihood(theta) + self.prior.logpdf(theta) 
-
 
 
     def compute_KL(self, vgmm, noise = None, component_indices = None , B = 1000):
         samples = vgmm.sample(B, noise, component_indices)
-
         return (vgmm.log_prob(samples[:,None]) - self.log_prob(samples)).mean()
 

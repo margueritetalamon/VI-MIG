@@ -1,7 +1,4 @@
 from scipy.stats import multivariate_normal 
-import torch
-from torch.distributions import MultivariateNormal
-from einops import rearrange 
 import numpy as np 
 
 
@@ -15,22 +12,17 @@ class Funnel:
         
 
     def prob(self, x):
-        ### x size b 2 = d
-
-        b = x.shape[0]
-
-        means_tensor = torch.full((b, 1), self.means[1])
-        cov_tensor = torch.exp(torch.as_tensor(x[:, 0])/2).unsqueeze(-1).unsqueeze(-1)  # shape becomes (b, 1, 1)
-        g2 = MultivariateNormal(means_tensor, covariance_matrix=cov_tensor)
-        return  self.g1.pdf(x[:, 0])*g2.log_prob(torch.as_tensor(x[:, 1][:, None])).exp().numpy()          
+      
+        return np.exp(self.log_prob(x))
     
     def log_prob(self, x):
-        return np.log(self.prob(x))
+        x = x.astype( dtype=np.float64 )
+        return -np.log(2*np.pi *self.sigma)/2 - x[:,0]**2/ (2*self.sigma) - np.log(2*np.pi)/2 - x[:,1]**2 * np.exp(-x[:,0])/2 - x[:,0]/2
     
     def gradient_log_density(self, x):
-        ### grad first variable 
-        grad1 = - x[:,0]/self.sigma - 0.25 + ((x[:, 1]**2)/(4 * np.exp(x[:, 0]/2)))
-        grad2 =  - x[:, 1]/np.exp(x[:, 0]/2)
+        x = x.astype( dtype=np.float64 )
+        grad1 = - x[:,0] / self.sigma  + x[:,1]**2 * np.exp(-x[:,0]) / 2 - 0.5        
+        grad2 =  - x[:, 1]*np.exp(-x[:,0])
 
         return np.stack((grad1, grad2)).T
     

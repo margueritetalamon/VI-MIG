@@ -29,10 +29,6 @@ class VI_GMM:
         elif  mode == "iso":
             self.vgmm = IGMM(d = self.dim, **kwargs)
 
-
-        elif mode == "stan":
-            self.vgmm = STGMM(**kwargs)
-
         self.dim = self.vgmm.dim
         
 
@@ -50,35 +46,8 @@ class VI_GMM:
         self.drop_rate = 0.8
         self.epochs_drop = 1000
 
-    
-    def lr_step_based_decay(self, epoch, initial_lr =  1):
-        
-
-        decay_factor = math.pow(self.drop_rate, math.floor(epoch / self.epochs_drop))
-        new_learning_rate = initial_lr * decay_factor
-
-        return new_learning_rate
-    
-    def lr_sqrt(self, epoch):
-        new_learning_rate = 1 - np.sqrt( epoch / self.n_iterations)
-        return new_learning_rate
-
-    def lr_ln(self, epoch):
-        new_learning_rate = 1 -  np.log(epoch+1)/np.log(self.n_iterations) 
-
-        return new_learning_rate
-
-    def lr_sqrt_ln(self, epoch):
-        new_learning_rate = 1 - np.sqrt( np.log(epoch+1)/np.log(self.n_iterations) )
-
-        return new_learning_rate
-    
-    def lr_linear(self, epoch):
-        new_learning_rate = self.learning_rate /(epoch +1)
-
-        return new_learning_rate
-    
-    def optimize(self, bw = True, md = False, lin = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False, compute_kl = 1000):
+  
+    def optimize(self, bw = True, md = False, ngd = False,  means_only = False,  plot_iter = 1000, gen_noise = True, scheduler  = False, save_grads = False, compute_kl = 1000):
 
 
         initial_lr =  self.learning_rate
@@ -110,7 +79,7 @@ class VI_GMM:
 
             if scheduler:
 
-                learning_rate = self.lr_linear(_)
+                learning_rate = self.lr_sqrt(_)
                 # print(learning_rate)
 
             new_means = self.vgmm.means - learning_rate * self.vgmm.n_components * grad_means
@@ -135,7 +104,7 @@ class VI_GMM:
 
             
 
-            elif lin : 
+            elif ngd : 
                 new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * self.vgmm.n_components * learning_rate * grad_means
 
                 inv_new_epsilons = (1/self.vgmm.epsilons) + (2 *  self.vgmm.n_components * learning_rate * grad_covs / self.dim)
@@ -149,10 +118,12 @@ class VI_GMM:
                 raise ValueError("No optim performed.")
 
 
+            
 
             self.vgmm.update(new_means, new_epsilons)
-
+          
             # self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
+
             if _ % compute_kl == 0 or _ == self.n_iterations -1:
                 self.kls.append(self.target.model.compute_KL(vgmm = self.vgmm, noise =  noise_KL, B = self.BKL, component_indices = component_indices))
 
@@ -168,6 +139,43 @@ class VI_GMM:
 
 
         self.time = time.time() - start
+    
+    ## LEARNING SCHEDULER
+      
+    def lr_step_based_decay(self, epoch, initial_lr =  1):
+        
+
+        decay_factor = math.pow(self.drop_rate, math.floor(epoch / self.epochs_drop))
+        new_learning_rate = initial_lr * decay_factor
+
+        return new_learning_rate
+    
+    def lr_sqrt(self, epoch):
+
+        if epoch > 20:
+            new_learning_rate = (1 - np.sqrt( epoch / self.n_iterations)) / 100
+        else:
+            new_learning_rate = 1 - np.sqrt( epoch / self.n_iterations)
+
+        # new_learning_rate = (1 - np.sqrt( epoch / self.n_iterations)) / 100
+
+        return new_learning_rate
+
+    def lr_ln(self, epoch):
+        new_learning_rate = 1 -  np.log(epoch+1)/np.log(self.n_iterations) 
+
+        return new_learning_rate
+
+    def lr_sqrt_ln(self, epoch):
+        new_learning_rate = 1 - np.sqrt( np.log(epoch+1)/np.log(self.n_iterations) )
+
+        return new_learning_rate
+    
+    def lr_linear(self, epoch):
+        new_learning_rate = self.learning_rate /(epoch +1)
+
+        return new_learning_rate
+    
 
 
 
@@ -181,11 +189,17 @@ class VI_GMM:
     
 
     def save(self, folder):
+        
                
-        np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
-        np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
+        # np.save(f"{folder}/optimized_means.npy", self.vgmm.optimized_means)
+        # np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
+        np.save(f"{folder}/means.npy", self.vgmm.means)
+        # np.save(f"{folder}/optimized_epsilons.npy", self.vgmm.optimized_epsilons)
         if self.mode == "full":
-            np.save(f"{folder}/optimized_covariances.npy", self.vgmm.optimized_covs)
+            np.save(f"{folder}/covariances.npy", self.vgmm.covariances)
+        else: 
+            np.save(f"{folder}/epsilons.npy", self.vgmm.covariances)
+            
 
         np.save(f"{folder}/kls.npy", self.kls)
         np.save(f"{folder}/time.npy", self.time)
