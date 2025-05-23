@@ -41,7 +41,7 @@ run_experiment() {
         --save_interval 1 \
         --bs 128 \
         --compile 1 \
-        --warmup_epochs 0 \
+        --warmup_epochs 1 \
         --kl_start 1 \
         --kl_end 1 \
         --device gpu \
