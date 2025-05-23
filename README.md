@@ -3,3 +3,9 @@
 This repository is the repository of the paper Variational Inference with Mixture of Isotropic Gaussians (Petit Talamon, Lambert, Korba)
 
 Variational inference (VI) is a popular approach in Bayesian inference, that looks for the best approximation of the posterior distribution within a parametric family, minimizing a loss that is typically the (reverse) Kullback-Leibler (KL) divergence. In this paper, we focus on the following parametric family: mixtures of isotropic Gaussians (i.e., with diagonal covariance matrices proportional to the identity) and uniform weights. We develop a variational framework and provide efficient algorithms suited for this family. In contrast with mixtures of Gaussian with generic covariance matrices, this choice presents a balance between accurate approximations of multimodal Bayesian posteriors, while being memory and computationally efficient. Our algorithms implement gradient descent on the location of the mixture components (the modes of the Gaussians), and either (an entropic) Mirror or Bures descent on their variance parameters. We illustrate the performance of our algorithms on numerical experiments.
+
+# BNN with torch
+Example of code to run:
+```
+python bnn_torch.py --dataset mnist --method ibw --lr 1e-3 --epochs 100 --fc_dims 256 --device cpu --model mlp --n_components 5 --bs 128 --compile 1 --warmup_epochs 1 --kl_start 1.0 --kl_end 1.0
+```
