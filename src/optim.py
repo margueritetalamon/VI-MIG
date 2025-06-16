@@ -1,4 +1,4 @@
-from src.gmm import GMM, IGMM, FGMM, STGMM
+from src.gmm import GMM, IGMM, FGMM
 from src.logreg import LogReg
 
 import numpy as np
@@ -105,10 +105,12 @@ class VI_GMM:
             
 
             elif ngd : 
-                new_means = self.vgmm.means - self.vgmm.epsilons[:, None] * self.vgmm.n_components * learning_rate * grad_means
-
                 inv_new_epsilons = (1/self.vgmm.epsilons) + (2 *  self.vgmm.n_components * learning_rate * grad_covs / self.dim)
                 new_epsilons = (inv_new_epsilons)**(-1)
+
+                new_means = self.vgmm.means - new_epsilons[:, None] * self.vgmm.n_components * learning_rate * grad_means
+
+                
 
                     
             elif means_only:
@@ -302,8 +304,6 @@ class VI_GMM:
 
         
 
-
-                            
 
 
                                     
