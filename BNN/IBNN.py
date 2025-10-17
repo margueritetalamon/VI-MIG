@@ -153,8 +153,35 @@ class IGMMBayesianMLP(nn.Module):
                     x = F.relu(x)
                     x = self.dropouts[L](x)
 
+
             return x, torch.cat(samples, dim = -1)
         
+
+    def compute_expected_neg_loglikelihood(self, output, target):
+
+        log_sum_exp_probs = torch.logsumexp(output, dim=-1) ### log sum over classes of exp probs (second term of the log likelihood), N_comp, Batch
+        labels_expanded = target.view(1, -1, 1).expand(output.size(0), -1, 1) ## labels to shape N_comp, Batch, 1
+        predicted_probs_of_true_labels = output.gather(dim=2, index=labels_expanded).squeeze(2) ## N_comp, Batch
+
+        log_lieklihood = (predicted_probs_of_true_labels - log_sum_exp_probs).sum(dim = -1) ### sum over batch (log likelihood), N_comp
+        expected_log_likelohood = log_lieklihood.mean()
+        nll = - expected_log_likelohood
+
+        return nll ### good term do not need to change sign
+
+
+
+
+    # posterior distribution loss function
+    ### can go to IBNN too
+    def loss_function(self, output: torch.Tensor,
+                target: torch.Tensor, samples = None):
+        
+        nll = self.compute_expected_neg_loglikelihood(output, target)
+        neg_log_prior = self.compute_expected_log_prior()
+        neg_entropy = self.compute_negentropy(samples) if samples is not None else 0
+        return neg_entropy + nll + neg_log_prior , neg_entropy, nll, neg_log_prior
+            
 
 
     def compute_expected_log_prior(self):
@@ -172,7 +199,7 @@ class IGMMBayesianMLP(nn.Module):
         return (norm_means_summed + eps_sum) / (2*self.prior_var) ### just need to add this term no put - 
     
     def compute_negentropy(self, samples):
- 
+
         means_flat = torch.cat([torch.cat([layer.weight_mu.reshape(self.n_components, -1),layer.bias_mu.reshape(self.n_components, -1) ], dim=1)for layer in self.layers ], dim=1)
         eps = torch.exp(0.5 * self.layers[0].logeps)**2
 
@@ -339,420 +366,3 @@ class IGMMBayesianMLP(nn.Module):
 
 
 
-
-
-
-# Laplace Approximation Layers
-class LaplaceLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, bias: bool = True, 
-                 prior_precision: float = 1.0):
-        """
-        Linear layer for Laplace approximation.
-        
-        Args:
-            in_features: Input dimension
-            out_features: Output dimension  
-            bias: Whether to include bias term
-            prior_precision: Precision of Gaussian prior (1/prior_variance)
-        """
-        super(LaplaceLinear, self).__init__()
-        
-        self.in_features = in_features
-        self.out_features = out_features
-        self.prior_precision = prior_precision
-        
-        # Standard linear layer parameters (MAP estimates)
-        self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.1)
-        if bias:
-            self.bias = nn.Parameter(torch.zeros(out_features))
-        else:
-            self.register_parameter('bias', None)
-        
-        # Hessian approximations (computed after MAP training)
-        self.hessian_computed = False
-        
-        # Diagonal Hessian approximation
-        self.weight_precision_diag = None  # Diagonal of Hessian for weights
-        self.bias_precision_diag = None    # Diagonal of Hessian for bias
-        
-        # KFAC approximation  
-        self.kfac_A = None  # Input covariance factor
-        self.kfac_S = None  # Output covariance factor
-        self.kfac_bias_precision = None  # Bias precision for KFAC
-        
-        # For storing activations and gradients during KFAC computation
-        self.register_buffer('activations', None)
-        self.register_buffer('output_gradients', None)
-        
-        # Adam optimizer state variables
-        self.adam_step = 0
-        self.adam_m = {}  # First moment estimates
-        self.adam_v = {}  # Second moment estimates
-        
-    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG):
-        """
-        Forward pass. During training, behaves like standard linear layer.
-        During inference with sampling, adds noise based on Laplace approximation.
-        """
-        if not sample or not self.hessian_computed:
-            # Standard forward pass (training or before Hessian computation)
-            return F.linear(x, self.weight, self.bias)
-        
-        # Sample from Laplace posterior
-        if method == METHOD_LAPLACE_DIAG:
-            return self._forward_sample_diagonal(x)
-        elif method == METHOD_LAPLACE_KFAC:
-            return self._forward_sample_kfac(x)
-        else:
-            return F.linear(x, self.weight, self.bias)
-    
-    def _forward_sample_diagonal(self, x: torch.Tensor):
-        """Sample from diagonal Laplace approximation."""
-        if self.weight_precision_diag is None:
-            return F.linear(x, self.weight, self.bias)
-            
-        # Sample weight noise with conservative scaling
-        weight_var = 1.0 / (self.weight_precision_diag + 1e-6)
-        # Apply temperature scaling to control sampling variance
-        # Use very conservative scaling to preserve MAP performance
-        temperature = 0.05  # Very conservative parameter - higher = more variance
-        weight_var = weight_var * (temperature ** 2)  # Variance scaling
-        weight_noise = torch.randn_like(self.weight) * torch.sqrt(weight_var)
-        sampled_weight = self.weight + weight_noise
-        
-        # Sample bias noise if bias exists
-        sampled_bias = self.bias
-        if self.bias is not None and self.bias_precision_diag is not None:
-            bias_var = 1.0 / (self.bias_precision_diag + 1e-6)
-            bias_var = bias_var * (temperature ** 2)  # Use same temperature scaling for bias
-            bias_noise = torch.randn_like(self.bias) * torch.sqrt(bias_var)
-            sampled_bias = self.bias + bias_noise
-            
-        return F.linear(x, sampled_weight, sampled_bias)
-    
-    def _forward_sample_kfac(self, x: torch.Tensor):
-        """Sample from KFAC Laplace approximation."""
-        if self.kfac_A is None or self.kfac_S is None:
-            return F.linear(x, self.weight, self.bias)
-            
-        # Sample weight noise using KFAC factors
-        # W ~ N(W_MAP, S^-1 ⊗ A^-1)
-        try:
-            # Add damping for numerical stability
-            damping = 1e-3
-            A_damped = self.kfac_A + damping * torch.eye(self.kfac_A.size(0), device=self.kfac_A.device)
-            S_damped = self.kfac_S + damping * torch.eye(self.kfac_S.size(0), device=self.kfac_S.device)
-            
-            # Compute Cholesky factors for sampling (lower triangular)
-            L_A = torch.linalg.cholesky(A_damped)
-            L_S = torch.linalg.cholesky(S_damped)
-            
-            # Sample noise matrix
-            noise = torch.randn_like(self.weight)
-            
-            # Apply temperature scaling for controlled sampling
-            temperature = 0.1  # Conservative scaling to match diagonal method
-            
-            # Transform noise: noise = L_S @ noise @ L_A^T
-            # This gives us samples from N(0, S^-1 ⊗ A^-1)
-            noise = L_S @ noise @ L_A.T
-            
-            # Scale by temperature
-            noise = noise * temperature
-            
-            sampled_weight = self.weight + noise
-            
-        except RuntimeError:
-            # Fallback to diagonal approximation if Cholesky fails
-            return self._forward_sample_diagonal(x)
-        
-        # Handle bias
-        sampled_bias = self.bias
-        if self.bias is not None and self.kfac_bias_precision is not None:
-            bias_var = 1.0 / (self.kfac_bias_precision + 1e-6)
-            # Apply same temperature scaling
-            bias_var = bias_var * (temperature ** 2)  # Variance scaling
-            bias_noise = torch.randn_like(self.bias) * torch.sqrt(torch.tensor(bias_var, device=self.bias.device))
-            sampled_bias = self.bias + bias_noise
-            
-        return F.linear(x, sampled_weight, sampled_bias)
-    
-    def compute_diagonal_hessian(self, data_loader, model, loss_fn, device):
-        """
-        Compute diagonal Hessian approximation using simplified Gauss-Newton approximation.
-        This should be called after MAP training.
-        """
-        print(f"Computing diagonal Hessian for layer with shape {self.weight.shape}...")
-        
-        # Initialize precision accumulators  
-        weight_precision = torch.zeros_like(self.weight)
-        bias_precision = torch.zeros_like(self.bias) if self.bias is not None else None
-        
-        model.eval()
-        total_samples = 0
-        
-        # Use a simplified approach: uniform precision approximation
-        # This avoids the complex hook-based approach that was causing issues
-        print(f"Using simplified uniform approximation for layer with out_features: {self.out_features}")
-        
-        with torch.no_grad():
-            for batch_idx, (data, target) in enumerate(data_loader):
-                data, target = data.to(device), target.to(device)
-                batch_size = data.size(0)
-                
-                # For simplicity, use uniform Hessian approximation
-                # This is a common practice in practice for Laplace approximation
-                uniform_precision = 0.25  # Common value for ReLU-like activations
-                
-                # Add uniform precision to all weights and biases
-                weight_precision += uniform_precision * torch.ones_like(self.weight)
-                if bias_precision is not None:
-                    bias_precision += uniform_precision * torch.ones_like(self.bias)
-                
-                total_samples += batch_size
-                
-                if batch_idx % 50 == 0:
-                    print(f"Processed {batch_idx * batch_size}/{len(data_loader.dataset)} samples")
-        
-        # Normalize and add prior precision with better scaling
-        self.weight_precision_diag = weight_precision / total_samples + self.prior_precision
-        
-        # Apply reasonable bounds to avoid extreme variances
-        self.weight_precision_diag = torch.clamp(self.weight_precision_diag, min=0.01, max=100.0)
-        if bias_precision is not None:
-            self.bias_precision_diag = bias_precision / len(data_loader) + self.prior_precision
-            
-        self.hessian_computed = True
-        print("Diagonal Hessian computation completed.")
-    
-    def compute_kfac_hessian(self, data_loader, model, device, damping: float = 1e-3):
-        """
-        Compute KFAC approximation of Hessian.
-        KFAC approximates H ≈ S ⊗ A where A is input covariance and S is output covariance.
-        """
-        print(f"Computing KFAC Hessian for layer with shape {self.weight.shape}...")
-        
-        # Initialize covariance matrices
-        A_sum = torch.zeros(self.in_features + 1, self.in_features + 1, device=device)  # +1 for bias
-        S_sum = torch.zeros(self.out_features, self.out_features, device=device)
-        
-        model.eval()
-        total_samples = 0
-        
-        with torch.no_grad():
-            for batch_idx, (data, target) in enumerate(data_loader):
-                data, target = data.to(device), target.to(device)
-                batch_size = data.size(0)
-                
-                # Forward pass
-                output = model(data, sample=False)
-                p = F.softmax(output, dim=1)
-                
-                # Get activations for this layer (simplified - would need model hooks)
-                if hasattr(self, '_last_input'):
-                    activations = self._last_input
-                    
-                    # Add bias term to activations
-                    if self.bias is not None:
-                        ones = torch.ones(batch_size, 1, device=device)
-                        activations_with_bias = torch.cat([activations, ones], dim=1)
-                    else:
-                        activations_with_bias = activations
-                    
-                    # Accumulate A matrix (input covariance)
-                    A_sum += torch.matmul(activations_with_bias.T, activations_with_bias)
-                    
-                    # For S matrix, use simplified approximation
-                    # Since we don't have layer-specific outputs, use identity-based approximation
-                    # This is a simplification - full KFAC would require forward hooks for each layer
-                    S_batch = torch.eye(self.out_features, device=device)
-                    S_sum += S_batch
-                
-                total_samples += batch_size
-                
-                if batch_idx % 50 == 0:
-                    print(f"Processed {batch_idx * batch_size}/{len(data_loader.dataset)} samples")
-        
-        # Normalize and add damping
-        A = A_sum / total_samples + damping * torch.eye(A_sum.size(0), device=device)
-        S = S_sum / total_samples + damping * torch.eye(S_sum.size(0), device=device)
-        
-        # Store KFAC factors
-        if self.bias is not None:
-            self.kfac_A = A[:-1, :-1]  # Weight part
-            self.kfac_bias_precision = A[-1, -1].item()  # Bias precision
-        else:
-            self.kfac_A = A
-            self.kfac_bias_precision = None
-            
-        self.kfac_S = S
-        self.hessian_computed = True
-        print("KFAC Hessian computation completed.")
-    
-    def register_hooks(self):
-        """Register forward hooks to capture activations for Hessian computation."""
-        def forward_hook(module, input, output):
-            if len(input) > 0:
-                module._last_input = input[0].detach()
-        
-        self.register_forward_hook(forward_hook)
-
-# Laplace Bayesian Models
-class LaplaceBayesianMLP(nn.Module):
-    def __init__(self, input_dim: int, hidden_dims: list, output_dim: int,
-                 dropout_rate: float = 0.0, prior_precision: float = 1.0):
-        """
-        Multi-layer Bayesian Neural Network using Laplace approximation.
-        
-        Args:
-            input_dim: Input dimension
-            hidden_dims: List of hidden layer dimensions
-            output_dim: Output dimension (number of classes)
-            dropout_rate: Dropout rate between layers
-            prior_precision: Precision of Gaussian prior
-        """
-        super(LaplaceBayesianMLP, self).__init__()
-        
-        self.input_dim = input_dim
-        self.hidden_dims = hidden_dims
-        self.output_dim = output_dim
-        self.dropout_rate = dropout_rate
-        self.prior_precision = prior_precision
-        
-        # Build the network layers
-        self.layers = nn.ModuleList()
-        self.dropouts = nn.ModuleList()
-        
-        # Create all dimensions list
-        all_dims = [input_dim] + hidden_dims + [output_dim]
-        
-        # Create Laplace layers
-        for i in range(len(all_dims) - 1):
-            layer = LaplaceLinear(
-                in_features=all_dims[i],
-                out_features=all_dims[i + 1],
-                bias=True,
-                prior_precision=prior_precision
-            )
-            self.layers.append(layer)
-            
-            # Add dropout between hidden layers
-            if i < len(all_dims) - 2 and dropout_rate > 0:
-                self.dropouts.append(nn.Dropout(dropout_rate))
-            else:
-                self.dropouts.append(nn.Identity())
-        
-        # Training state
-        self.laplace_fitted = False
-        
-        # Adam optimizer state variables
-        self.adam_step = 0
-        self.adam_m = {}  # First moment estimates
-        self.adam_v = {}  # Second moment estimates
-        
-    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG):
-        """Forward pass through the Laplace MLP."""
-     
-    
-    
-    def fit_laplace(self, data_loader, device, method: int = METHOD_LAPLACE_DIAG):
-        """
-        Fit Laplace approximation after MAP training.
-        This computes the Hessian approximation for all layers.
-        """
-        print("Fitting Laplace approximation...")
-        
-        # Register hooks for all layers to capture activations
-        for layer in self.layers:
-            layer.register_hooks()
-        
-        # Compute Hessian approximation for each layer
-        for i, layer in enumerate(self.layers):
-            print(f"Processing layer {i+1}/{len(self.layers)}")
-            
-            if method == METHOD_LAPLACE_DIAG:
-                layer.compute_diagonal_hessian(data_loader, self, None, device)
-            elif method == METHOD_LAPLACE_KFAC:
-                layer.compute_kfac_hessian(data_loader, self, device)
-            else:
-                print(f"Unknown Laplace method: {method}")
-                return
-        
-        self.laplace_fitted = True
-        print("Laplace approximation fitting completed.")
-    
-    def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 100, 
-                               method: int = METHOD_LAPLACE_DIAG):
-        """Make predictions with uncertainty estimates."""
-        if not self.laplace_fitted:
-            print("Warning: Laplace approximation not fitted. Using MAP estimate.")
-            return self.forward(x, sample=False), torch.zeros_like(self.forward(x, sample=False))
-        
-        self.eval()
-        predictions = []
-        
-        with torch.no_grad():
-            for _ in range(n_samples):
-                pred = self.forward(x, sample=True, method=method)
-                predictions.append(pred)
-        
-        predictions = torch.stack(predictions)
-        mean_pred = predictions.mean(dim=0)
-        std_pred = predictions.std(dim=0)
-        
-        return mean_pred, std_pred
-    
-    def get_model_info(self):
-        """Get information about the model architecture."""
-        total_params = sum(p.numel() for p in self.parameters())
-        
-        info = {
-            "architecture": [self.input_dim] + self.hidden_dims + [self.output_dim],
-            "n_layers": len(self.layers),
-            "total_parameters": total_params,
-            "dropout_rate": self.dropout_rate,
-            "prior_precision": self.prior_precision,
-            "laplace_fitted": self.laplace_fitted
-        }
-        return info
-    
-    def step(self, learning_rate: float = 0.001, grad_clip: float = 5.0, 
-             optimizer: str = "adam", beta1: float = 0.9, beta2: float = 0.999, eps: float = 1e-8, **kwargs):
-        """
-        Optimization step for MAP training.
-        Supports both Adam and SGD optimizers.
-        
-        Args:
-            optimizer: "adam" or "sgd"
-        """
-        with torch.no_grad():
-            for name, param in self.named_parameters():
-                if param.grad is not None:
-                    # Apply gradient clipping
-                    torch.nn.utils.clip_grad_norm_(param, grad_clip)
-                    
-                    if optimizer.lower() == "adam":
-                        # Adam optimization
-                        self.adam_step += 1
-                        
-                        # Initialize Adam state if needed
-                        if name not in self.adam_m:
-                            self.adam_m[name] = torch.zeros_like(param.data)
-                            self.adam_v[name] = torch.zeros_like(param.data)
-                        
-                        grad = param.grad
-                        
-                        # Update first and second moment estimates
-                        self.adam_m[name].mul_(beta1).add_(grad, alpha=1 - beta1)
-                        self.adam_v[name].mul_(beta2).addcmul_(grad, grad, value=1 - beta2)
-                        
-                        # Bias correction
-                        m_hat = self.adam_m[name] / (1 - beta1 ** self.adam_step)
-                        v_hat = self.adam_v[name] / (1 - beta2 ** self.adam_step)
-                        
-                        # Update parameters
-                        param.data.add_(m_hat / (torch.sqrt(v_hat) + eps), alpha=-learning_rate)
-                    
-                    else:  # SGD
-                        # Standard gradient descent
-                        param.data.add_(param.grad, alpha=-learning_rate)
