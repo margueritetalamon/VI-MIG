@@ -7,6 +7,21 @@
 *.ipynb
 *.npy
 *.json
+*.pth
+
+__pycache__/
+*.py[cod]
+*.cpython-*
+
+*.png
+*.pt
+*.pdf
+*.gif
+*.DS_Store
+*.pyc
+*.ipynb
+*.npy
+*.json
 
 __pycache__/
 *.py[cod]
