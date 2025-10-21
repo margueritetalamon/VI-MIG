@@ -26,19 +26,18 @@ class IsotropicSampledMixtureLinear(nn.Module):
         self.weights = torch.ones(n_components)/n_components
 
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).uniform_(0, 1))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 0.1))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).uniform_(0, 0.1))
         
         # Single scalar log variance parameter for each component (isotropic)
         # One for weights and one for biases per component
         if shared_logeps is not None:
             self.logeps = shared_logeps
         else:
-            self.logeps = nn.Parameter(torch.Tensor(n_components).fill_(0))
+            self.logeps = nn.Parameter(torch.Tensor(n_components).fill_(-5))
         
         
     def forward(self, x: torch.Tensor, sample: bool = True, sampled_indices = None):
-       
        
         return 
 
@@ -69,6 +68,7 @@ class IGMMBayesianMLP(nn.Module):
         self.prior_var = prior_var
         self.prior_mean = prior_mean
         self.training = True
+        self.kl_weight = None
 
         # Build the network layers
         self.layers = nn.ModuleList()
@@ -112,6 +112,8 @@ class IGMMBayesianMLP(nn.Module):
                 self.logvar_params.append(param)
         
         self.N_layers = len(self.layers)
+
+   
             
     
 
@@ -119,7 +121,7 @@ class IGMMBayesianMLP(nn.Module):
         print(len(self.mean_params)) ### has to be equal to n_components
         # assert len(self.mean_params) == len(self.logvar_params)
 
-    def forward(self, x: torch.Tensor, sample: bool = True):
+    def forward(self, x: torch.Tensor, sample: bool = True, S = 10):
         """
         Forward pass through the Bayesian MLP.
 
@@ -127,47 +129,71 @@ class IGMMBayesianMLP(nn.Module):
             x: Input tensor
             sample: Whether to sample from the posterior (True) or use mean (False)
         """
-        # self.sampled_params = torch.zeros_like()
-        # self.neg_log_entropy
-        if self.training or sample: 
-            x = x.view(x.size(0), -1) 
-            x = x.unsqueeze(0).expand(self.n_components, -1, -1) ### N_component, Batch, input_dim
 
-            samples = []
+        if self.training or sample:
+            # S must be divisible by n_components
+            assert S % self.n_components == 0
+            samples_per_component = S // self.n_components
+            
+            x = x.view(x.size(0), -1)
+            x = x.unsqueeze(0).expand(S, -1, -1)  # (S, Batch, input_dim)
+            
+            
             for L in range(self.N_layers):
                 layer = self.layers[L]
-                param_std = torch.exp(0.5 * layer.logeps)  #
-                noise_weight = torch.randn_like(layer.weight_mu)
-                noise_bias = torch.randn_like(layer.bias_mu)
-
-                weights = layer.weight_mu + param_std[:, None, None] * noise_weight #### weights sampled from each components, n_comp, d_hidden,d_in, or other for the second layer
-                ### to have the norm between weights - layer.weight_mu 
-                biases = layer.bias_mu + param_std[:, None] * noise_bias #### bias sampled from each components, n_comp, d_hidden
-                samples.append(weights.reshape(self.n_components, -1))
-                samples.append(biases.reshape(self.n_components, -1))
-
-                W_t = weights.transpose(1, 2)
-                x = torch.bmm(x, W_t) ### N_comp, Batch, dim_hidden
-                x = x + biases.unsqueeze(1) ### N_comp, Batch, dim_hidden
-                if L < self.N_layers - 1: 
+                param_std = torch.exp(0.5 * layer.logeps)  # (n_components,)
+                
+                d_out, d_in = layer.weight_mu.shape[1:]
+                
+                # Create component indices: [0,0,...,0, 1,1,...,1, ..., n_comp-1,...]
+                # Shape: (S,) where each component appears samples_per_component times
+                component_ids = torch.arange(self.n_components, device=x.device).repeat_interleave(samples_per_component)
+                
+                # Sample noise for all S samples
+                noise_weight = torch.randn(S, d_out, d_in, device=x.device)
+                noise_bias = torch.randn(S, d_out, device=x.device)
+                
+                # Get means and stds by component
+                # weight_mu: (n_components, d_out, d_in) -> (S, d_out, d_in)
+                weight_means = layer.weight_mu[component_ids]  # (S, d_out, d_in)
+                bias_means = layer.bias_mu[component_ids]  # (S, d_out)
+                
+                # Broadcast stds: (n_components,) -> (S, d_out, d_in)
+                weight_std = param_std[component_ids].unsqueeze(-1).unsqueeze(-1).expand(S, d_out, d_in)
+                bias_std = param_std[component_ids].unsqueeze(-1).expand(S, d_out)
+                
+                # Sample weights and biases
+                weights = weight_means + weight_std * noise_weight  # (S, d_out, d_in)
+                biases = bias_means + bias_std * noise_bias  # (S, d_out)
+                
+                
+                # Forward pass
+                x = torch.bmm(x, weights.transpose(1, 2))  # (S, Batch, d_out)
+                x = x + biases.unsqueeze(1)
+                
+                if L < self.N_layers - 1:
                     x = F.relu(x)
                     x = self.dropouts[L](x)
+            
+            return x
+                
+
+    def compute_expected_neg_loglikelihood(self, outputs, target):
 
 
-            return x, torch.cat(samples, dim = -1)
+        S = outputs.shape[0]  # outputs of shape S, B, C
+        labels_expanded = target.unsqueeze(0).expand(S, -1)
+        # Compute log probabilities
+        log_probs = F.log_softmax(outputs, dim=2)  # (S, Batch, n_classes)
         
-
-    def compute_expected_neg_loglikelihood(self, output, target):
-
-        log_sum_exp_probs = torch.logsumexp(output, dim=-1) ### log sum over classes of exp probs (second term of the log likelihood), N_comp, Batch
-        labels_expanded = target.view(1, -1, 1).expand(output.size(0), -1, 1) ## labels to shape N_comp, Batch, 1
-        predicted_probs_of_true_labels = output.gather(dim=2, index=labels_expanded).squeeze(2) ## N_comp, Batch
-
-        log_lieklihood = (predicted_probs_of_true_labels - log_sum_exp_probs).sum(dim = -1) ### sum over batch (log likelihood), N_comp
-        expected_log_likelohood = log_lieklihood.mean()
-        nll = - expected_log_likelohood
-
-        return nll ### good term do not need to change sign
+        # Gather the log probability of the true class
+        # (S, Batch, n_classes) -> (S, Batch)
+        nll_per_sample = F.nll_loss(log_probs.view(S * target.size(0), -1),
+                                    labels_expanded.reshape(-1),
+                                    reduction='none').view(S, -1)
+        # Average over samples, sum over batchcan 
+        expected_loss = nll_per_sample.mean(dim=0).sum()
+        return expected_loss / target.size(0)
 
 
 
@@ -175,46 +201,74 @@ class IGMMBayesianMLP(nn.Module):
     # posterior distribution loss function
     ### can go to IBNN too
     def loss_function(self, output: torch.Tensor,
-                target: torch.Tensor, samples = None):
+                target: torch.Tensor):
         
         nll = self.compute_expected_neg_loglikelihood(output, target)
-        neg_log_prior = self.compute_expected_log_prior()
-        neg_entropy = self.compute_negentropy(samples) if samples is not None else 0
-        return neg_entropy + nll + neg_log_prior , neg_entropy, nll, neg_log_prior
+        kl = self.compute_KL_vi_prior()
+        return nll  + self.kl_weight * kl , nll, kl
             
 
+    def compute_KL_vi_prior(self):
+        kl_total = 0
+        ### This is an upper bound on the true KL 
 
-    def compute_expected_log_prior(self):
-        ### we assume that piror_mean = 0
-
-        norm_means_summed = 0
-
-
-        for layer in self.layers: 
-            for w, b in zip(layer.weight_mu, layer.bias_mu):
-                norm_means_summed+= (w**2).sum() + (b**2).sum()  ### \sum_i=1^N d*\eps^i + ||m^i||^2 = sum sur tout
-
-        eps_sum = ((self.layers[0].logeps.exp()**2)).sum()*self.overall_dim
-
-        return (norm_means_summed + eps_sum) / (2*self.prior_var) ### just need to add this term no put - 
+        for layer in self.layers:
+            sigma_sq = torch.exp(layer.logeps)  # (n_components,) - note: no 0.5 factor
+            
+            # Weights: (n_components, d_out, d_in)
+            n_w = layer.weight_mu[0].numel()
+            kl_w = 0.5 * (
+                sigma_sq * n_w + 
+                (layer.weight_mu ** 2).view(self.n_components, -1).sum(dim=1) - 
+                n_w - 
+                n_w * torch.log(sigma_sq)
+            ).sum() / self.n_components
+            
+            # Biases: (n_components, d_out)
+            n_b = layer.bias_mu[0].numel()
+            kl_b = 0.5 * (
+                sigma_sq * n_b + 
+                (layer.bias_mu ** 2).sum(dim=1) - 
+                n_b - 
+                n_b * torch.log(sigma_sq)
+            ).sum() / self.n_components
+            
+            kl_total += kl_w + kl_b
     
-    def compute_negentropy(self, samples):
+        return kl_total
 
-        means_flat = torch.cat([torch.cat([layer.weight_mu.reshape(self.n_components, -1),layer.bias_mu.reshape(self.n_components, -1) ], dim=1)for layer in self.layers ], dim=1)
-        eps = torch.exp(0.5 * self.layers[0].logeps)**2
 
-        diff = samples[:, None, :] - means_flat[None, :, :] 
-        log_comp = -0.5 * self.overall_dim * torch.log(math.pi*2*eps) - 0.5 * (diff**2).sum(dim = -1)/eps
-        neg_entropy = torch.logsumexp(log_comp - math.log(self.n_components), dim=1).mean()   
+    # def compute_expected_log_prior(self):
+    #     ### we assume that piror_mean = 0
+    #     return None
 
-        return neg_entropy ### just need to add this term no - 
+    #     norm_means_summed = 0
+
+
+    #     for layer in self.layers: 
+    #         for w, b in zip(layer.weight_mu, layer.bias_mu):
+    #             norm_means_summed+= (w**2).sum() + (b**2).sum()  ### \sum_i=1^N d*\eps^i + ||m^i||^2 = sum sur tout
+
+    #     eps_sum = ((self.layers[0].logeps.exp()**2)).sum()*self.overall_dim
+
+    #     return (norm_means_summed + eps_sum) / (2*self.prior_var) ### just need to add this term no put - 
+    
+    # def compute_negentropy(self, samples):
+
+    #     means_flat = torch.cat([torch.cat([layer.weight_mu.reshape(self.n_components, -1),layer.bias_mu.reshape(self.n_components, -1) ], dim=1)for layer in self.layers ], dim=1)
+    #     eps = torch.exp(0.5 * self.layers[0].logeps)**2
+
+    #     diff = samples[:, None, :] - means_flat[None, :, :] 
+    #     log_comp = -0.5 * self.overall_dim * torch.log(math.pi*2*eps) - 0.5 * (diff**2).sum(dim = -1)/eps
+    #     neg_entropy = torch.logsumexp(log_comp - math.log(self.n_components), dim=1).mean()   
+
+    #     return neg_entropy ### just need to add this term no - 
 
 
 
     def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 100):
         """
         Make predictions with uncertainty estimates using multiple forward passes.
-
         Args:
             x: Input tensor
             n_samples: Number of forward passes for uncertainty estimation

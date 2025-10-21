@@ -36,7 +36,7 @@ class MargArgs(tap.Tap):
     dataset: str = "" # mnist, cifar10, boston
     device: str = "cpu" # whether to use CPU or GPU (if available)
     seed: int = 41
-    save_interval: int = 1  # Save metrics every N epochs
+    save_interval: int = 1000  # Save metrics every N epochs
     save_dir: str = "./results"  # Directory to save results
     method: str = "ibw" # method: ibw, md, lin, gd, laplace_diag, laplace_kfac
     bs: int = 128 # batch size
@@ -142,6 +142,8 @@ else:
                             mu_scale_init=args.mu_scale_init,
                             prior_mean=args.prior_mean, prior_var=args.prior_var)
 
+N_train = len(train_loader)
+model.kl_weight = 1/N_train
 
 # Save the model configuration
 model_config = model.get_model_info()
@@ -170,13 +172,6 @@ metrics = {
     'test_nll': [],
     'test_loss': []
 }
-
-def kl_weight_scheduler(epoch: int):
-    """Gradually increase KL weight during warmup."""
-    if epoch - 1 < args.warmup_epochs: # -1 because training starts at 1
-        return args.kl_start + (args.kl_end - args.kl_start) * (float(epoch - 1) / float(args.warmup_epochs))
-    else:
-        return args.kl_end
 
 
 
@@ -217,13 +212,13 @@ def train(model, train_loader, epoch, method, is_laplace=False):
 
         # Forward pass
         if is_laplace:
-            output = model(data, sample=False)  # No sampling during MAP training
+            output  = model(data, sample=False)  # No sampling during MAP training
         else:
-            output , samples = model(data)
+            output  = model(data)
 
         # loss, neg_entropy, nll, neg_log_prior = loss_function(output, target, model, samples)
 
-        loss, neg_entropy, nll, neg_log_prior = model.loss_function(output, target , samples) ### maybe this is easier then 
+        loss, nll, kl = model.loss_function(output, target ) ### maybe this is easier then 
         
         train_loss += loss.item()
         train_nll_total += nll.item()
@@ -239,7 +234,8 @@ def train(model, train_loader, epoch, method, is_laplace=False):
             probs = torch.softmax(output, dim=-1)  # (B,C) ## no need to average 
         else: 
             probs = torch.softmax(output, dim=-1).mean(dim=0)  # (B,C)
-            preds = probs.argmax(dim=-1)    
+        
+        preds = probs.argmax(dim=-1)    
        
 
         batch_accuracy, batch_correct = calculate_accuracy(preds, target)
@@ -251,9 +247,7 @@ def train(model, train_loader, epoch, method, is_laplace=False):
         # Use appropriate step method
 
         
-        if batch_idx % 10 == 0:
-            print(f'Train Epoch: {epoch}/{args.epochs} [{batch_idx * len(data)}/{len(train_loader.dataset)}'
-                  f' ({100. * batch_idx / len(train_loader):.0f}%)]\tLoss: {loss.item():.6f}')
+      
     
 
     # Calculate average metrics
@@ -292,29 +286,26 @@ def test(model, test_loader, epoch, n_samples=10, is_laplace=False, method=None)
             target = target.to(device, non_blocking=non_blocking)
 
             # Get multiple predictions
-            outputs = []
             
             if is_laplace:
                 # For Laplace models, use sampling if Hessian is fitted
                 if hasattr(model, 'laplace_fitted') and model.laplace_fitted:
-                    outputs.append(model(data, sample=True, method=method, n_samples = n_samples))
+                    outputs  = model(data, sample=True, method=method, n_samples = n_samples)
                 else:
-                    outputs.append(model(data, sample=False))  # MAP estimate only
+                    outputs  = model(data, sample=False)
 
             else:
-                output, _ = model(data, sample=True)
-                outputs.append(output)
+                outputs  = model(data, sample=True)
                 
 
 
             # Stack predictions
-            outputs = torch.concat(outputs, axis = 0)
-            loss, _, nll, _ = model.loss_function(output, target, samples)
+            loss, nll, kl = model.loss_function(outputs, target)
 
-            if outputs.dim == 3:
-                probs = torch.softmax(output, dim=-1).mean(dim=0)  # (B,C)
+            if outputs.dim() == 3:
+                probs = torch.softmax(outputs, dim=-1).mean(dim=0)  # (B,C)
             else:
-                probs = torch.softmax(output, dim=-1)  # (B,C)
+                probs = torch.softmax(outputs, dim=-1)  # (B,C)
 
             preds = probs.argmax(dim=-1)    
        
@@ -382,19 +373,35 @@ for epoch in range(1, epochs + 1):
     metrics['epochs'].append(epoch)
     metrics['lr'].append(lr_scheduler.step(epoch))
     
-    # Train with appropriate method
-    train_metrics = train(model, train_loader, epoch, method, is_laplace=is_laplace)
-    
+    loss, nll, accuracy = train(model, train_loader, epoch, method, is_laplace=is_laplace)
+    print(f"Train accuracy: {accuracy:.4f}, Loss: {loss:.4f}")
+
     # For Laplace methods, fit the Laplace approximation after each training epoch
     if is_laplace and epoch == epochs:
         print(f"\nFitting Laplace approximation after epoch {epoch}...")
         model.fit_laplace(train_loader, device, method)
-    
-    test_metrics = test(model, test_loader, epoch, is_laplace=is_laplace, method=method)
+        states = model.get_laplace_state()
+        torch.save(states, os.path.join(run_dir, "model_latest.pt"))
+
+
+    test_loss, test_nll, test_accuracy  = test(model, test_loader, epoch, is_laplace=is_laplace, method=method)
+
+    print(f"Test metrics:")
+    print(f"Test accuracy: {test_accuracy:.4f}, Loss: {test_loss:.4f}")
     
     # Save metrics every save_interval epochs and on the last epoch
     if epoch % args.save_interval == 0 or epoch == epochs:
         save_metrics(epoch, metrics, run_dir)
         save_model_checkpoint(model, epoch, hyperparams, metrics, run_dir)
 
-save_and_plot_metrics(args.method, metrics, hyperparams, run_dir)
+
+# save_and_plot_metrics(args.method, metrics, hyperparams, run_dir)
+
+metrics = {
+    'test_accuracy': [],
+    'test_nll': [],
+    'test_loss': []
+}
+test(model, train_loader, -1, is_laplace=is_laplace, method=method)
+test(model, test_loader, -1, is_laplace=is_laplace, method=method)
+save_metrics(-1, metrics, run_dir)

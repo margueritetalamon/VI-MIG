@@ -42,14 +42,13 @@ run_experiment() {
     
     # Run the Python script with the specified parameters
     # Use the base directory as save_dir to organize all runs
-    python bnn_torch.py \
+    python train.py \
         --method ${method} \
         --lr ${lr} \
         --epochs ${epochs} \
         --fc_dims ${fc_dims} \
         --n_components ${n_components} \
         --save_dir ${BASE_DIR} \
-        --save_interval 1 \
         --bs 128 \
         --compile 0 \
         --warmup_epochs 1 \
@@ -59,7 +58,6 @@ run_experiment() {
         --dataset ${DATASET} \
         --optimizer sgd \
         --dropout 0 \
-        --model mlp \
     
     echo "  Finished at: $(date)" | tee -a $LOG_FILE
     echo "---------------------------------------------" | tee -a $LOG_FILE
@@ -76,5 +74,11 @@ mkdir -p "${BASE_DIR}/combined_results"
 echo "Running all experiments sequentially..." | tee -a $LOG_FILE
 
 # Method: ibw
-echo "Running IBW experiments..." | tee -a $LOG_FILE
+# echo "Running IBW experiments..." | tee -a $LOG_FILE
+echo "Running Laplace experiments..." | tee -a $LOG_FILE
+# run_experiment "laplace_diag" "5e-4" 1 256 1 "cpu"
+
+# run_experiment "laplace_kfac" "5e-4" 2 256 1 "cpu"
 run_experiment "ibw" "1e-1" 250 256 1 "cpu"
+
+# run_experiment "ibw" "1e-1" 250 256 1 "cpu"

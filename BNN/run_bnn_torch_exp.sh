@@ -49,7 +49,6 @@ run_experiment() {
         --fc_dims ${fc_dims} \
         --n_components ${n_components} \
         --save_dir ${BASE_DIR} \
-        --save_interval 1 \
         --bs 128 \
         --compile 0 \
         --warmup_epochs 1 \
@@ -82,13 +81,13 @@ run_experiment "laplace_kfac" "5e-4" 250 256 1 "cpu"
 
 # Method: ibw
 echo "Running IBW experiments..." | tee -a $LOG_FILE
-run_experiment "ibw" "5e-4" 250 256 5 "gpu"
-run_experiment "ibw" "5e-4" 250 256 1 "gpu"
+run_experiment "ibw" "5e-3" 1000 256 5 "gpu"
+run_experiment "ibw" "5e-3" 1000 256 1 "gpu"
 
 # Method: md
 echo "Running MD experiments..." | tee -a $LOG_FILE
-run_experiment "md" "5e-4" 250 256 5 "gpu"
-run_experiment "md" "5e-4" 250 256 1 "gpu"
+run_experiment "md" "5e-3" 1000 256 5 "gpu"
+run_experiment "md" "5e-3" 1000 256 1 "gpu"
 
 # Method: lin
 # echo "Running LIN experiments..." | tee -a $LOG_FILE
