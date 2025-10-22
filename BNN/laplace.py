@@ -2,6 +2,7 @@
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
+import math 
 
 METHOD_LAPLACE_DIAG = 4
 METHOD_LAPLACE_KFAC = 5
@@ -26,6 +27,7 @@ class LaplaceLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.prior_precision = prior_precision
+        print(prior_precision)
         
         # Standard linear layer parameters (MAP estimates)
         self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.1)
@@ -55,7 +57,7 @@ class LaplaceLinear(nn.Module):
         self.adam_v = {}  # Second moment estimates
         self.num_stab = 1e-10
         
-    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG, n_samples = 10):
+    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG, S = 10):
         """
         Forward pass. During training, behaves like standard linear layer.
         During inference with sampling, adds noise based on Laplace approximation.
@@ -67,65 +69,87 @@ class LaplaceLinear(nn.Module):
         
         # Sample from Laplace posterior
         if method == METHOD_LAPLACE_DIAG:
-            return self._forward_sample_diagonal(x)
+            return self._forward_sample_diagonal(x, S = S)
         
         elif method == METHOD_LAPLACE_KFAC:
-            return self._forward_sample_kfac(x)
+            return self._forward_sample_kfac(x, S = S)
         
         else:
             return F.linear(x, self.weight, self.bias)
     
-    def _forward_sample_diagonal(self, x: torch.Tensor):
+    def _forward_sample_diagonal(self, x: torch.Tensor, S:int = 10):
         """Sample from diagonal Laplace approximation."""
 
-        n_samples = x.shape[0]
+        if x.dim() == 2:  # [B, I]
+            B, I = x.shape
+            x = x.unsqueeze(0).expand(S, -1, -1) 
+
+        S, B, I = x.shape
+
+        O = self.out_features
+
         if self.weight_precision_diag is None:
-            return F.linear(x, self.weight, self.bias)
+            return F.linear(x.view(-1, I), self.weight, self.bias).view(S, B, O)
     
          
         weight_var = 1.0 / (self.weight_precision_diag + self.num_stab)
+        weight_std = torch.sqrt(weight_var) 
         bias_var = 1.0 / (self.bias_precision_diag + self.num_stab)
+        bias_std = torch.sqrt(bias_var)
+
+
+        noise_weight = torch.randn(S, O, I, device=self.weight.device, dtype=self.weight.dtype)
+        weights = self.weight.unsqueeze(0) + weight_std.unsqueeze(0) * noise_weight  # [S, O, I]
+
+        noise_bias = torch.randn(S, O, device=self.bias.device, dtype=self.bias.dtype)
+        biases = self.bias.unsqueeze(0) + bias_std.unsqueeze(0) * noise_bias
+   
+    
+        output = torch.bmm(x, weights.transpose(1, 2))
+        output = output + biases.unsqueeze(1)
 
        
-        noise_weight = torch.randn(n_samples, *self.weight.shape) #N_samples, d_h, d_in
-        noise_bias = torch.randn(n_samples, *self.bias.shape) #N_samples, d_h
-
-        weights = self.weight[None] +  torch.sqrt(weight_var[None]) * noise_weight #### N_sample, d_hidd, d_in
-        biases = self.bias[None] + torch.sqrt(bias_var[None]) * noise_bias #### bias sampled N_samples, h_dim, h_in
-
-        W_t = weights.transpose(1, 2)
-        x = torch.bmm(x, W_t) ### N_sample, Batch, dim_hidden
-        x = x + biases.unsqueeze(1) ### N_sample, Batch, dim_hidden
             
-        return x
+        return output
     
-    def _forward_sample_kfac(self, x: torch.Tensor):
-        
+    def _forward_sample_kfac(self, x: torch.Tensor, S: int = 5):
+        # x: [S,B,I]
+
+        if x.dim() == 2:  # [B, I]
+            B, I = x.shape
+            x = x.unsqueeze(0).expand(S, -1, -1) 
+
         S, B, I = x.shape
         O = self.out_features
         lam = self.prior_precision
 
-        # eigendecompose A and S
-        UA_eig, a = torch.linalg.eigh(self.kfac_A)   # A = UA_eig @ diag(a) @ UA_eig^T
-        US_eig, s = torch.linalg.eigh(self.kfac_S)   # S = US_eig @ diag(s) @ US_eig^T
+        # eigh returns (eigenvalues, eigenvectors)
+        a, UA = torch.linalg.eigh(self.kfac_A)     # a:[I], UA:[I,I]
+        s, US = torch.linalg.eigh(self.kfac_S)     # s:[O], US:[O,O]
 
-        # sample weight noise in eigen-basis, scale by posterior precision
-        Z = torch.randn(S, O, I, device=self.weight.device, dtype=self.weight.dtype)  # standard normal
-        Zp = torch.einsum('op,sqi,iq->sop', US_eig.T, Z, UA_eig)                      # Z' = U_S^T Z U_A
-        denom = s[:, None] * a[None, :] + lam                                         # [O, I]
-        Zs = Zp / torch.sqrt(denom)                                                   # scale
-        dW = torch.einsum('op,spr, rq->soq', US_eig, Zs, UA_eig.T)                    # ΔW = U_S Zs U_A^T
-        W = self.weight.unsqueeze(0) + dW                                             # [S, O, I]
+        # --- sample weights ---
+        Z = torch.randn(S, O, I, device=self.weight.device, dtype=self.weight.dtype)   # [S,O,I]
 
-        # bias: Cov(b) ≈ (S + lam I)^{-1}
-        Zb = torch.randn(S, O, device=self.bias.device, dtype=self.bias.dtype)
-        Zb_p = Zb @ US_eig                                                            # Zb' = Zb U_S
-        Zb_s = Zb_p / torch.sqrt(s + lam)                                             # scale
-        b = Zb_s @ US_eig.T + self.bias.unsqueeze(0)                                  # b = Zb'' + b_MAP  -> [S, O]
+        # Z' = U_S^T * Z * U_A   -> [S,O,I]
+        Zp = torch.einsum('op,soi,iq->spq', US.transpose(-1, -2), Z, UA)  # [S,O,I]
 
-        # batched matmul: [S,B,I] @ [S,I,O] -> [S,B,O]
-        y = torch.bmm(x, W.transpose(-1, -2)) + b.unsqueeze(1)
+        denom = s[:, None] * a[None, :] + lam                            # [O,I]
+        Zs = Zp / torch.sqrt(denom)                                      # [S,O,I]
+
+        # ΔW = U_S * Zs * U_A^T  -> [S,O,I]
+        dW = torch.einsum('op,spq,qr->sor', US, Zs, UA.transpose(-1, -2))  # [S,O,I]
+        W  = self.weight.unsqueeze(0) + dW                                  # [S,O,I]
+
+        # --- sample bias: Cov(b) ≈ (S + lam I)^-1 ---
+        Zb   = torch.randn(S, O, device=self.bias.device, dtype=self.bias.dtype)      # [S,O]
+        Zb_p = Zb @ US                                                                # [S,O]
+        Zb_s = Zb_p / torch.sqrt(s + lam)                                             # [S,O]
+        b    = Zb_s @ US.transpose(-1, -2) + self.bias.unsqueeze(0)                   # [S,O]
+
+        # --- forward: [S,B,I] @ [S,I,O] -> [S,B,O] ---
+        y = torch.bmm(x, W.transpose(-1, -2)) + b.unsqueeze(1)                        # [S,B,O]
         return y
+
 
 
 # Laplace Bayesian Models
@@ -153,6 +177,7 @@ class LaplaceBayesianMLP(nn.Module):
         # Build the network layers
         self.layers = nn.ModuleList()
         self.dropouts = nn.ModuleList()
+        self.kl_weight = None
         
         # Create all dimensions list
         all_dims = [input_dim] + hidden_dims + [output_dim]
@@ -182,7 +207,7 @@ class LaplaceBayesianMLP(nn.Module):
         self.adam_m = {}  # First moment estimates
         self.adam_v = {}  # Second moment estimates
         
-    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG, n_samples = 10):
+    def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG, S = 10):
         """Forward pass through the Laplace MLP."""
 
         if len(x.shape) > 2:
@@ -195,20 +220,20 @@ class LaplaceBayesianMLP(nn.Module):
                     x = F.relu(x)
                     x = self.dropouts[L](x)
             
-            return x
+            return x 
 
 
         if sample: 
-            x = x.unsqueeze(0).expand(n_sample, -1, -1) ### n_sample, Batch, input_dim
+            x = x.unsqueeze(0).expand(S, -1, -1) ### n_sample, Batch, input_dim
 
             for L in range(self.N_layers):
-                x = self.layers[L](x, sample=sample, method=method)
+                x = self.layers[L](x, sample=sample, method=method, S=S)
                 if L < self.N_layers - 1: 
                     x = F.relu(x)
                     x = self.dropouts[L](x)
-            return x ## N_sample, B, out_dim
+            return x  ## N_sample, B, out_dim
 
-    def loss_function(self, outputs, targets, samples = None):
+    def loss_function(self, outputs, targets):
        
         """
         U(z) = -log p(D|z) - log p(z)
@@ -219,17 +244,35 @@ class LaplaceBayesianMLP(nn.Module):
             outputs: predicted by the model
             y: targets [B]
         """
+        # print(outputs.shape)
+        if outputs.dim() == 2:
+            nll = F.cross_entropy(outputs, targets, reduction="sum")
         
-        nll = F.cross_entropy(outputs, targets, reduction="sum")
+        elif outputs.dim() == 3:
+            S, B, C = outputs.shape
+            # log p(y|x) ≈ log(1/S * sum_s p(y|x,w_s))
+            log_probs = F.log_softmax(outputs, dim=-1)  # [S, B, C]
+            
+            # Gather correct class log probs: [S, B]
+            target_idx = targets.view(1, B, 1).expand(S, B, 1)
+            log_p_correct = torch.gather(log_probs, dim=2, index=target_idx).squeeze(-1)
+            
+            # Log-mean-exp over samples: log(mean_s p(y|w_s))
+            log_mean_p = torch.logsumexp(log_p_correct, dim=0) - torch.log(torch.tensor(float(S)))
+            
+            # NLL = -sum_b log p(y_b|x_b)
+            nll = -log_mean_p.sum()
+        else: 
+            raise ValueError("Problem")
 
         # Gaussian prior term: (λ0/2) * sum ||params||^2
-        prior_quad = 0.0
+        prior = 0.0
         for p in self.parameters():
             if p is not None:
-                prior_quad = prior_quad + p.pow(2).sum()
-        prior = 0.5 * self.prior_precision * prior_quad
+                prior = prior + p.pow(2).sum()
+        prior = 0.5 * self.prior_precision * prior
 
-        return nll + prior, None , nll, prior
+        return nll + self.kl_weight * prior , nll, prior
      
     
     
@@ -239,7 +282,8 @@ class LaplaceBayesianMLP(nn.Module):
         This computes the Hessian approximation for all layers.
         """
         print("Fitting Laplace approximation...") 
-       
+
+        self.training = False
             
         if method == METHOD_LAPLACE_DIAG:
             self.compute_diag_hessian(data_loader, device)
@@ -250,54 +294,67 @@ class LaplaceBayesianMLP(nn.Module):
             return  
         self.laplace_fitted = True
         print("Laplace approximation fitting completed.")
-
+      
 
     def compute_diag_hessian(self, data_loader, device):
-
-        self.eval()  # freeze BN/Dropout stats; still compute grads
+        self.eval()
         stats = [{"a2_sum": None, "d2_sum": None, "N": 0} for _ in self.layers]
         hooks = []
 
-        # Track a^2 and δ^2 per layer
-
+        # Forward hook
         def fwd_hook(idx):
             def hook(mod, inp, out):
-                # inp[0]: [B, in_features]
-                mod._a = inp[0].detach()  # keep on same device
+                mod._a = inp[0].detach()
             return hook
 
-        # backward: capture pre-activation gradient δ = dL/ds
+        # Backward hook
         def bwd_hook(idx):
             def hook(mod, grad_input, grad_output):
-                # grad_output[0]: [B, out_features]
                 mod._delta = grad_output[0].detach()
             return hook
 
+        # Register hooks
         for i, layer in enumerate(self.layers):
             hooks.append(layer.register_forward_hook(fwd_hook(i)))
             hooks.append(layer.register_full_backward_hook(bwd_hook(i)))
 
-        seen = 0
-        batch_counter = 0
+        batch_count = 0
 
         for data, target in data_loader:
             data = data.to(device)
             target = target.to(device)
 
-            # Flatten if needed (your forward already handles it, but ok either way)
             self.zero_grad(set_to_none=True)
-            logits = self(data)                 # NO softmax here
-            loss = F.cross_entropy(logits, target, reduction='sum')  # sum for proper scaling
+            logits  = self(data)
+            loss = F.cross_entropy(logits, target, reduction='sum')
             loss.backward()
 
             B = data.size(0)
-            seen += B
 
+            # DEBUG: Only print first batch
+            if batch_count == 0:
+                for i, layer in enumerate(self.layers):
+                    a = layer._a
+                    d = layer._delta
+                    print(f"\n=== Layer {i}, Batch {batch_count} ===")
+                    print(f"  a shape: {a.shape}, range: [{a.min():.4f}, {a.max():.4f}]")
+                    print(f"  δ shape: {d.shape}, range: [{d.min():.4f}, {d.max():.4f}]")
+                    print(f"  a² sum: {(a**2).sum():.4e}")
+                    print(f"  δ² sum: {(d**2).sum():.4e}")
+                 
+
+                print("\n=== Gradient Check ===")
+                for name, param in self.named_parameters():
+                    if param.grad is not None:
+                        print(f"{name}: grad norm = {param.grad.norm():.4e}, grad mean = {param.grad.mean():.4e}")
+
+            # Accumulate for ALL batches
             for i, layer in enumerate(self.layers):
-                a = layer._a          # [B, I]
-                d = layer._delta      # [B, O]
-                a2 = (a ** 2).mean(dim=0) * B   # weight by batch size
-                d2 = (d ** 2).mean(dim=0) * B
+                a = layer._a
+                d = layer._delta
+                
+                a2 = (a ** 2).sum(dim=0)
+                d2 = (d ** 2).sum(dim=0)
 
                 if stats[i]["a2_sum"] is None:
                     stats[i]["a2_sum"] = a2
@@ -308,42 +365,48 @@ class LaplaceBayesianMLP(nn.Module):
                     stats[i]["d2_sum"] += d2
                     stats[i]["N"] += B
 
-            batch_counter += 1
+            batch_count += 1
+            # NO BREAK HERE!
 
+        # AFTER loop - check accumulation
+        print(f"\n=== After Processing All Batches ===")
+        print(f"Total batches processed: {batch_count}")
+        print(f"Total samples: {stats[0]['N']}")
+        
         eps = 1e-12
         for i, layer in enumerate(self.layers):
             if stats[i]["N"] == 0:
-                # Fallback: tiny curvature (prior only)
                 I = torch.full((layer.in_features,), eps, device=device, dtype=layer.weight.dtype)
                 O = torch.full((layer.out_features,), eps, device=device, dtype=layer.weight.dtype)
             else:
-                I = stats[i]["a2_sum"] / stats[i]["N"]  # E[a^2], [I]
-                O = stats[i]["d2_sum"] / stats[i]["N"]  # E[δ^2], [O]
+                I = stats[i]["a2_sum"] / stats[i]["N"]
+                O = stats[i]["d2_sum"] / stats[i]["N"]
+                
+                print(f"Layer {i}:")
+                print(f"  I range: [{I.min():.4e}, {I.max():.4e}], mean: {I.mean():.4e}")
+                print(f"  O range: [{O.min():.4e}, {O.max():.4e}], mean: {O.mean():.4e}")
 
-            # diag(H_W) = O ⊗ I  (outer product)
-            weight_diag = torch.ger(O, I)              # [O, I]
-            bias_diag   = O.clone()                    # [O]
+            # Compute diagonal Hessian
+            weight_diag = torch.outer(O, I)
+            bias_diag = O.clone()
+            
+            print(f"  weight_diag range: [{weight_diag.min():.4e}, {weight_diag.max():.4e}], mean: {weight_diag.mean():.4e}")
 
-            # Store diags (optional) and posterior precisions
-            layer.weight_diag = weight_diag
-            layer.bias_diag   = bias_diag
-
+            # Posterior precision
             layer.weight_precision_diag = weight_diag + layer.prior_precision
             if layer.bias is not None:
                 layer.bias_precision_diag = bias_diag + layer.prior_precision
 
-            # Optional: clamp for stability
-            layer.weight_precision_diag = torch.clamp(layer.weight_precision_diag, min=1e-8)
+            layer.weight_precision_diag = torch.clamp(layer.weight_precision_diag, min=1e-12)
             if layer.bias is not None:
-                layer.bias_precision_diag = torch.clamp(layer.bias_precision_diag, min=1e-8)
+                layer.bias_precision_diag = torch.clamp(layer.bias_precision_diag, min=1e-12)
 
             layer.hessian_computed = True
 
-        # Cleanup hooks
+        # Cleanup
         for h in hooks:
             h.remove()
         self._clear_tmp_io()
-
 
     
     def compute_KFAC_hessian(self, data_loader, device,
@@ -386,16 +449,16 @@ class LaplaceBayesianMLP(nn.Module):
             hooks.append(m.register_forward_hook(fwd_hook))
             hooks.append(m.register_full_backward_hook(bwd_hook))
 
-        alpha = 1.0 - ema_decay  # EMA update weight
-        num_batches = 0
+        total_samples = 0
 
-        for bidx, (x, y) in enumerate(data_loader):
+        for x, y in data_loader:
             x = x.to(device)
             y = y.to(device)
+            B = x.size(0)
 
             # Forward + backward with summed CE to keep scaling consistent
             self.zero_grad(set_to_none=True)
-            logits = self(x)  # no softmax here
+            logits  = self(x)  # no softmax here
             loss = F.cross_entropy(logits, y, reduction='sum')
             loss.backward()
 
@@ -406,32 +469,25 @@ class LaplaceBayesianMLP(nn.Module):
                 if a is None or d is None:  # safety
                     continue
 
-                B = a.shape[0]
                 # second moments (not centered): [I,I], [O,O]
-                A_batch = (a.T @ a) / B
-                S_batch = (d.T @ d) / B
+                m.kfac_A += a.T @ a        # [I, I]
+                m.kfac_S += d.T @ d     
+        
+            total_samples += B
+            
 
-                # EMA update
-                m.kfac_A = ema_decay * m.kfac_A + alpha * A_batch
-                m.kfac_S = ema_decay * m.kfac_S + alpha * S_batch
-
-            num_batches += 1
-            if (max_batches is not None) and (num_batches >= max_batches):
-                break
-
-        # Damping and bias precision
         for m in layers:
             I, O = m.in_features, m.out_features
             # Ridge damping for numerical stability
+            m.kfac_A = m.kfac_A / total_samples
+            m.kfac_S = m.kfac_S / total_samples
+
             m.kfac_A = m.kfac_A + ridge * torch.eye(I, device=device, dtype=m.kfac_A.dtype)
             m.kfac_S = m.kfac_S + ridge * torch.eye(O, device=device, dtype=m.kfac_S.dtype)
 
-            # Bias Fisher block is S; use its diagonal as bias precision term
-            # then add prior precision (posterior precision for bias):
-            bias_prec = torch.diag(m.kfac_S).clone()
-            if m.prior_precision is not None:
-                bias_prec = bias_prec + m.prior_precision
-            m.kfac_bias_precision = torch.clamp(bias_prec, min=1e-8)
+
+            bias_prec = torch.diag(m.kfac_S).clone() + m.prior_precision
+            m.kfac_bias_precision = torch.clamp(bias_prec, min=1e-12)
 
             m.hessian_computed = True  # mark available
 
@@ -508,3 +564,29 @@ class LaplaceBayesianMLP(nn.Module):
                     else:  # SGD
                         # Standard gradient descent
                         param.data.add_(param.grad, alpha=-learning_rate)
+
+    def get_laplace_state(self):
+        """
+        Collect the MAP params + diagonal and/or K-FAC curvature you computed.
+        Everything is detached and moved to CPU for saving.
+        """
+        state = {
+            "prior_precision": float(self.prior_precision),
+            "layers": []
+        }
+        for m in self.layers:
+            d = {
+                "weight": m.weight.detach().cpu(),
+                "bias":   (m.bias.detach().cpu() if m.bias is not None else None),
+                # diagonal Laplace
+                "weight_precision_diag": (getattr(m, "weight_precision_diag", None).detach().cpu()
+                                        if getattr(m, "weight_precision_diag", None) is not None else None),
+                "bias_precision_diag":   (getattr(m, "bias_precision_diag", None).detach().cpu()
+                                        if getattr(m, "bias_precision_diag", None) is not None else None),
+                # K-FAC
+                "kfac_A": (m.kfac_A.detach().cpu() if getattr(m, "kfac_A", None) is not None else None),
+                "kfac_S": (m.kfac_S.detach().cpu() if getattr(m, "kfac_S", None) is not None else None),
+            }
+            state["layers"].append(d)
+        return state
+

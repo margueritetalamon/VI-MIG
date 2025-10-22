@@ -26,8 +26,8 @@ class IsotropicSampledMixtureLinear(nn.Module):
         self.weights = torch.ones(n_components)/n_components
 
         # Mean parameters for each Gaussian component
-        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 0.1))
-        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).uniform_(0, 0.1))
+        self.weight_mu = nn.Parameter(torch.Tensor(n_components, out_features, in_features).normal_(0, 1))
+        self.bias_mu = nn.Parameter(torch.Tensor(n_components, out_features).uniform_(0, 1))
         
         # Single scalar log variance parameter for each component (isotropic)
         # One for weights and one for biases per component
@@ -121,7 +121,7 @@ class IGMMBayesianMLP(nn.Module):
         print(len(self.mean_params)) ### has to be equal to n_components
         # assert len(self.mean_params) == len(self.logvar_params)
 
-    def forward(self, x: torch.Tensor, sample: bool = True, S = 10):
+    def forward(self, x: torch.Tensor, sample: bool = True, S = 5):
         """
         Forward pass through the Bayesian MLP.
 
@@ -155,7 +155,8 @@ class IGMMBayesianMLP(nn.Module):
                 
                 # Get means and stds by component
                 # weight_mu: (n_components, d_out, d_in) -> (S, d_out, d_in)
-                weight_means = layer.weight_mu[component_ids]  # (S, d_out, d_in)
+ 
+                weight_means = layer.weight_mu[component_ids] # (S, d_out, d_in)
                 bias_means = layer.bias_mu[component_ids]  # (S, d_out)
                 
                 # Broadcast stds: (n_components,) -> (S, d_out, d_in)
@@ -211,6 +212,7 @@ class IGMMBayesianMLP(nn.Module):
     def compute_KL_vi_prior(self):
         kl_total = 0
         ### This is an upper bound on the true KL 
+        prior_sigma_sq = self.prior_var
 
         for layer in self.layers:
             sigma_sq = torch.exp(layer.logeps)  # (n_components,) - note: no 0.5 factor
@@ -218,19 +220,19 @@ class IGMMBayesianMLP(nn.Module):
             # Weights: (n_components, d_out, d_in)
             n_w = layer.weight_mu[0].numel()
             kl_w = 0.5 * (
-                sigma_sq * n_w + 
-                (layer.weight_mu ** 2).view(self.n_components, -1).sum(dim=1) - 
+                sigma_sq/prior_sigma_sq  * n_w + 
+                (layer.weight_mu ** 2).view(self.n_components, -1).sum(dim=1) / prior_sigma_sq - 
                 n_w - 
-                n_w * torch.log(sigma_sq)
+                n_w * torch.log(sigma_sq/prior_sigma_sq)
             ).sum() / self.n_components
             
             # Biases: (n_components, d_out)
             n_b = layer.bias_mu[0].numel()
             kl_b = 0.5 * (
-                sigma_sq * n_b + 
-                (layer.bias_mu ** 2).sum(dim=1) - 
+                sigma_sq/prior_sigma_sq * n_b + 
+                (layer.bias_mu ** 2).sum(dim=1) / prior_sigma_sq- 
                 n_b - 
-                n_b * torch.log(sigma_sq)
+                n_b * torch.log(sigma_sq/prior_sigma_sq)
             ).sum() / self.n_components
             
             kl_total += kl_w + kl_b
@@ -266,7 +268,7 @@ class IGMMBayesianMLP(nn.Module):
 
 
 
-    def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 100):
+    def predict_with_uncertainty(self, x: torch.Tensor, n_samples: int = 10):
         """
         Make predictions with uncertainty estimates using multiple forward passes.
         Args:

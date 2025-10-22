@@ -35,7 +35,7 @@ def get_device(force_cpu: bool = False):
         print("No GPU found. Using CPU instead.")
     return device
 
-def load_mnist(device, batch_size: int = 128):
+def load_mnist(device, batch_size: int = 128, num_workers: int = 0):
     # Load MNIST dataset
     transform = transforms.Compose([
         transforms.ToTensor(),
@@ -53,10 +53,10 @@ def load_mnist(device, batch_size: int = 128):
         test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False)
     else:
         train_loader = torch.utils.data.DataLoader(train_dataset, batch_size=batch_size, shuffle=True,
-                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   num_workers=num_workers, pin_memory=True, persistent_workers=True,
                                                    prefetch_factor=2, drop_last=True)
         test_loader = torch.utils.data.DataLoader(test_dataset, batch_size=batch_size, shuffle=False,
-                                                   num_workers=8, pin_memory=True, persistent_workers=True,
+                                                   num_workers=num_workers, pin_memory=True, persistent_workers=True,
                                                    prefetch_factor=2, drop_last=True)
     return train_loader, test_loader
 
@@ -157,9 +157,9 @@ def load_boston(device, batch_size: int = 128):
     
     return train_loader, test_loader
 
-def load_dataset(device, dataset_name: str, batch_size: int = 128):
+def load_dataset(device, dataset_name: str, batch_size: int = 128, num_workers: int = 0):
     if dataset_name == "mnist":
-        return load_mnist(device, batch_size)
+        return load_mnist(device, batch_size, num_workers)
     elif dataset_name == "cifar10":
         return load_cifar10(device, batch_size)
     elif dataset_name == "boston":
@@ -171,21 +171,28 @@ def load_dataset(device, dataset_name: str, batch_size: int = 128):
 
 # Save metrics function
 def save_metrics(epoch, metrics, run_dir):
+    """Save metrics to disk."""
     # Save metrics as numpy files
     for metric_name, values in metrics.items():
-        np.save(os.path.join(run_dir, f"{metric_name}.npy"), np.array(values))
+        # Handle both tensors and regular Python numbers
+        if isinstance(values, list):
+            # Convert list to numpy array, handling tensors if present
+            np_values = []
+            for v in values:
+                if isinstance(v, torch.Tensor):
+                    np_values.append(v.detach().cpu().item())  # Extract scalar from tensor
+                else:
+                    np_values.append(v)  # Already a Python number
+            np.save(os.path.join(run_dir, f"{metric_name}.npy"), np.array(np_values))
+        elif isinstance(values, torch.Tensor):
+            # Single tensor
+            np.save(os.path.join(run_dir, f"{metric_name}.npy"), values.detach().cpu().numpy())
+        else:
+            # Regular numpy array or Python number
+            np.save(os.path.join(run_dir, f"{metric_name}.npy"), np.array(values))
     
     # Also save the current state of all metrics in one file for convenience
     np.save(os.path.join(run_dir, f"metrics_epoch_{epoch}.npy"), metrics)
-    
-    # Save the latest metrics values to a JSON file for easy inspection
-    latest_metrics = {metric: values[-1] for metric, values in metrics.items()}
-    latest_metrics["epoch"] = epoch
-    
-    # with open(os.path.join(run_dir, "latest_metrics.json"), "w") as f:
-    #     json.dump(latest_metrics, f, indent=4)
-    
-    # print(f"Metrics saved for epoch {epoch}")
 
 # Function to save model checkpoints
 def save_model_checkpoint(model, epoch, hyperparams, metrics, run_dir):
@@ -224,23 +231,14 @@ def save_and_plot_metrics(method, metrics, hyperparams, run_dir):
 
     # ELBO plot
     plt.subplot(2, 2, 2)
-    plt.plot(epochs_list, metrics['train_elbo'], label='Train')
-    plt.plot(epochs_list, metrics['test_elbo'], label='Test')
-    plt.title('ELBO')
+    plt.plot(epochs_list, metrics['train_loss'], label='Train')
+    plt.plot(epochs_list, metrics['test_loss'], label='Test')
+    plt.title('Loss')
     plt.xlabel('Epoch')
-    plt.ylabel('ELBO')
+    plt.ylabel('Loss')
     plt.legend()
     plt.grid(True, linestyle='--', alpha=0.7)
 
-    # KL Divergence plot
-    plt.subplot(2, 2, 3)
-    plt.plot(epochs_list, metrics['train_kl_div'], label='Train')
-    plt.plot(epochs_list, metrics['test_kl_div'], label='Test')
-    plt.title('KL Divergence')
-    plt.xlabel('Epoch')
-    plt.ylabel('KL Divergence')
-    plt.legend()
-    plt.grid(True, linestyle='--', alpha=0.7)
 
     # Negative Log Likelihood plot
     plt.subplot(2, 2, 4)
@@ -269,12 +267,10 @@ def save_and_plot_metrics(method, metrics, hyperparams, run_dir):
         f.write("Initial Metrics (Pre-Training):\n")
         f.write(f"  train_accuracy: {metrics['train_accuracy'][0]:.6f}\n")
         f.write(f"  train_nll: {metrics['train_nll'][0]:.6f}\n")
-        f.write(f"  train_kl_div: {metrics['train_kl_div'][0]:.6f}\n")
-        f.write(f"  train_elbo: {metrics['train_elbo'][0]:.6f}\n")
+        f.write(f"  train_loss {metrics['train_loss'][0]:.6f}\n")
         f.write(f"  test_accuracy: {metrics['test_accuracy'][0]:.6f}\n")
         f.write(f"  test_nll: {metrics['test_nll'][0]:.6f}\n")
-        f.write(f"  test_kl_div: {metrics['test_kl_div'][0]:.6f}\n")
-        f.write(f"  test_elbo: {metrics['test_elbo'][0]:.6f}\n\n")
+        f.write(f"  test_loss: {metrics['test_loss'][0]:.6f}\n\n")
         
         f.write("Final Metrics (After Training):\n")
         for metric, values in metrics.items():
@@ -284,7 +280,7 @@ def save_and_plot_metrics(method, metrics, hyperparams, run_dir):
         
         # Calculate improvements from initial to final
         f.write("Improvements (Final - Initial):\n")
-        for metric in ['train_accuracy', 'test_accuracy', 'train_elbo', 'test_elbo']:
+        for metric in ['train_accuracy', 'test_accuracy', 'train_loss', 'test_loss']:
             if len(metrics[metric]) > 1:
                 improvement = metrics[metric][-1] - metrics[metric][0]
                 f.write(f"  {metric}: {improvement:.6f}\n")
@@ -297,17 +293,17 @@ def save_and_plot_metrics(method, metrics, hyperparams, run_dir):
         best_test_acc = max(metrics['test_accuracy'])
         best_test_acc_epoch = metrics['epochs'][metrics['test_accuracy'].index(best_test_acc)]
         
-        best_train_elbo = max(metrics['train_elbo'])
-        best_train_elbo_epoch = metrics['epochs'][metrics['train_elbo'].index(best_train_elbo)]
+        best_train_elbo = max(metrics['train_loss'])
+        best_train_elbo_epoch = metrics['epochs'][metrics['train_loss'].index(best_train_elbo)]
         
-        best_test_elbo = max(metrics['test_elbo'])
-        best_test_elbo_epoch = metrics['epochs'][metrics['test_elbo'].index(best_test_elbo)]
+        best_test_elbo = max(metrics['test_loss'])
+        best_test_elbo_epoch = metrics['epochs'][metrics['test_loss'].index(best_test_elbo)]
         
         f.write("Best Metrics:\n")
         f.write(f"  Best Train Accuracy: {best_train_acc:.4f} (Epoch {best_train_acc_epoch})\n")
         f.write(f"  Best Test Accuracy: {best_test_acc:.4f} (Epoch {best_test_acc_epoch})\n")
-        f.write(f"  Best Train ELBO: {best_train_elbo:.4f} (Epoch {best_train_elbo_epoch})\n")
-        f.write(f"  Best Test ELBO: {best_test_elbo:.4f} (Epoch {best_test_elbo_epoch})\n")
+        f.write(f"  Best Train Loss: {best_train_elbo:.4f} (Epoch {best_train_elbo_epoch})\n")
+        f.write(f"  Best Test Loss: {best_test_elbo:.4f} (Epoch {best_test_elbo_epoch})\n")
 
     print(f"Training summary saved to {os.path.join(run_dir, 'training_summary.txt')}")
 

@@ -7,7 +7,6 @@ import torch.nn.functional as F
 import ast
 
 from utils_bnn_torch import (
-    get_device,
     load_dataset,
     save_and_plot_metrics,
     save_metrics,
@@ -29,12 +28,39 @@ from laplace import (
 )
 
 
+def setup_device(device_arg):
+    """Setup device with optimal settings"""
+    if device_arg == 'cpu':
+        device = torch.device('cpu')
+        
+        # Get number of CPUs from SLURM or system
+        num_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count()))
+        
+        # Set threading for optimal CPU performance
+        torch.set_num_threads(num_cpus)
+        
+        # Enable MKL optimizations
+        if torch.backends.mkl.is_available():
+            torch.backends.mkl.enabled = True
+        
+        print(f"Using CPU with {num_cpus} threads")
+        print(f"MKL enabled: {torch.backends.mkl.is_available()}")
+        
+        return device, num_cpus
+    else:
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        num_cpus = 4  # For data loading
+        print(f"Using device: {device}")
+        return device, num_cpus
+
+
+
 def parse_tuple(s: str) -> tuple[int, int, int, int]:
     return ast.literal_eval(s)
 
 class MargArgs(tap.Tap):
     dataset: str = "" # mnist, cifar10, boston
-    device: str = "cpu" # whether to use CPU or GPU (if available)
+    device: str = "gpu" # whether to use CPU or GPU (if available)
     seed: int = 41
     save_interval: int = 1000  # Save metrics every N epochs
     save_dir: str = "./results"  # Directory to save results
@@ -49,10 +75,10 @@ class MargArgs(tap.Tap):
     epochs: int = 10 # number of times we go through the dataset
     n_components: int = 5 # number of gaussians in MOG
     # NOTE: we call ELBO the Negative ELBO
-    mc_samples: int = 5 # MC samples to estimate the KL divergence (ELBO = NLL(q(D|z)) + KL(q(z) || p(z)))
+    S: int = 5 # MC samples to estimate the KL divergence (ELBO = NLL(q(D|z)) + KL(q(z) || p(z)))
     mu_scale_init: float = 1.0 # mu weigths are initialized in a uniform distribu between [-a, a], a = mu_scale_init
     prior_mean: float = 0.0 # prior on mu weights
-    prior_var: float = 10.0 # prior on var weights (higher means we care less about prior)
+    prior_var: float = 1 # prior on var weights (higher means we care less about prior)
     fc_dims: list[int] = [256] # fully-connect layers dimensions
     dropout: float = 0.0
     grad_clip: float = 1.0 # clip gradient norm
@@ -65,13 +91,13 @@ class MargArgs(tap.Tap):
 
 args = MargArgs().parse_args()
 
+
 # First thing: get device.
 # This is important to be first because this sets the default dtype for torch
-force_cpu = True if args.device == "cpu" else False
-device = get_device(force_cpu)
-non_blocking = True if device == torch.device("cuda") else False
-if device == torch.device("cuda"):
-    print(f"CUDA non-blocking? ", non_blocking)
+device, num_workers = setup_device(args.device)
+non_blocking = (device.type == "cuda")
+
+
 # Set random seed for reproducibility
 torch.manual_seed(args.seed)
 
@@ -107,8 +133,8 @@ hyperparams = args.as_dict()
 with open(os.path.join(run_dir, "hyperparameters.json"), "w") as f:
     json.dump(hyperparams, f, indent=4)
 
-# Load dataset
-train_loader, test_loader = load_dataset(device, args.dataset, args.bs)
+
+train_loader, test_loader = load_dataset(device, args.dataset, args.bs, num_workers)
 
 # Initialize model and optimizer
 n_components = args.n_components
@@ -214,7 +240,7 @@ def train(model, train_loader, epoch, method, is_laplace=False):
         if is_laplace:
             output  = model(data, sample=False)  # No sampling during MAP training
         else:
-            output  = model(data)
+            output  = model(data, S = args.S)
 
         # loss, neg_entropy, nll, neg_log_prior = loss_function(output, target, model, samples)
 
@@ -272,7 +298,7 @@ def train(model, train_loader, epoch, method, is_laplace=False):
 
 # Evaluation function with uncertainty estimation
 # Takes epoch as input because needs to determine the kl_weight for the loss
-def test(model, test_loader, epoch, n_samples=10, is_laplace=False, method=None):
+def test(model, test_loader, epoch, S=10, is_laplace=False, method=None):
     model.eval()
     test_loss = 0
     test_nll_total = 0
@@ -290,12 +316,12 @@ def test(model, test_loader, epoch, n_samples=10, is_laplace=False, method=None)
             if is_laplace:
                 # For Laplace models, use sampling if Hessian is fitted
                 if hasattr(model, 'laplace_fitted') and model.laplace_fitted:
-                    outputs  = model(data, sample=True, method=method, n_samples = n_samples)
+                    outputs  = model(data, sample=True, method=method, S = S)
                 else:
                     outputs  = model(data, sample=False)
 
             else:
-                outputs  = model(data, sample=True)
+                outputs  = model(data, sample=True, S = S )
                 
 
 
@@ -380,11 +406,21 @@ for epoch in range(1, epochs + 1):
     if is_laplace and epoch == epochs:
         print(f"\nFitting Laplace approximation after epoch {epoch}...")
         model.fit_laplace(train_loader, device, method)
+        print("\n=== Hessian Diagnostics ===")
+        for i, layer in enumerate(model.layers):
+            if method == METHOD_LAPLACE_DIAG:
+                print(f"Layer {i}:")
+                print(f"  Weight precision: min={layer.weight_precision_diag.min():.2e}, max={layer.weight_precision_diag.max():.2e}, mean={layer.weight_precision_diag.mean():.2e}")
+                print(f"  Bias precision: min={layer.bias_precision_diag.min():.2e}, max={layer.bias_precision_diag.max():.2e}")
+        
+        # Check variance (inverse of precision)
+        weight_var = 1.0 / (layer.weight_precision_diag + 1e-10)
+        print(f"  Weight std: min={torch.sqrt(weight_var).min():.2e}, max={torch.sqrt(weight_var).max():.2e}, mean={torch.sqrt(weight_var).mean():.2e}")
         states = model.get_laplace_state()
         torch.save(states, os.path.join(run_dir, "model_latest.pt"))
 
 
-    test_loss, test_nll, test_accuracy  = test(model, test_loader, epoch, is_laplace=is_laplace, method=method)
+    test_loss, test_nll, test_accuracy  = test(model = model, test_loader = test_loader,epoch =  epoch, is_laplace=is_laplace, method=method, S = args.S*2)
 
     print(f"Test metrics:")
     print(f"Test accuracy: {test_accuracy:.4f}, Loss: {test_loss:.4f}")
