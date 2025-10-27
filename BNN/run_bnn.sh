@@ -72,6 +72,10 @@ while [[ $# -gt 0 ]]; do
             PV="$2"
             shift 2
             ;;
+        --bs)
+            bs="$2"
+            shift 2
+            ;;
         --help|-h)
             show_usage
             ;;
@@ -105,6 +109,7 @@ run_experiment() {
     local n_components=${5:-5}
     local device=$6
     local pv=$7
+    local bs=$8
     
     # Create a descriptive name for this experiment
     exp_name="${method}_lr${lr}_e${epochs}_n${n_components}"
@@ -127,7 +132,7 @@ run_experiment() {
         --n_components ${n_components} \
         --prior_var ${pv} \
         --save_dir ${BASE_DIR} \
-        --bs 128 \
+        --bs ${bs} \
         --compile 0 \
         --warmup_epochs 1 \
         --kl_start 1 \
@@ -200,9 +205,10 @@ if [ "$run_ibw" == true ]; then
     ibw_epochs=${EPOCHS:-1000}
     ibw_device=${DEVICE:-gpu}
     ibw_pv=${PV:-10.0} 
+    ibw_bs=${bs:-128} 
     
     for n_comp in "${n_comp_list[@]}"; do
-        run_experiment "ibw" "$ibw_lr" "$ibw_epochs" 256 "$n_comp" "$ibw_device" "$ibw_pv"
+        run_experiment "ibw" "$ibw_lr" "$ibw_epochs" 256 "$n_comp" "$ibw_device" "$ibw_pv" "$ibw_bs"
     done
 fi
 

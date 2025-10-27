@@ -16,7 +16,7 @@ from utils_bnn_torch import (
 from IBNN import (
     METHOD_IBW,
     METHOD_MD,
-    METHOD_LIN,
+    METHOD_NGD,
     METHOD_GD,
     IGMMBayesianMLP,
     )
@@ -64,7 +64,7 @@ class MargArgs(tap.Tap):
     seed: int = 41
     save_interval: int = 1000  # Save metrics every N epochs
     save_dir: str = "./results"  # Directory to save results
-    method: str = "ibw" # method: ibw, md, lin, gd, laplace_diag, laplace_kfac
+    method: str = "ibw" # method: ibw, md, ngd, gd, laplace_diag, laplace_kfac
     bs: int = 128 # batch size
     lr: float = 1e-3 # learning rate
     lr_scheduler: str = "none" # cosine, cosine_restart, step, none
@@ -88,6 +88,7 @@ class MargArgs(tap.Tap):
     compile: int = 0 # Whether or not to compile the BNN
     skip_pretraining: bool = True # Skip initial evaluation of model
     optimizer: str = "sgd" # Optimizer for Laplace methods: adam, sgd
+    test_interval: int = 10
 
 args = MargArgs().parse_args()
 
@@ -107,8 +108,8 @@ if args.method == "ibw":
     method = METHOD_IBW
 elif args.method == "md":
     method = METHOD_MD
-elif args.method == "lin":
-    method = METHOD_LIN
+elif args.method == "ngd":
+    method = METHOD_NGD
 elif args.method == "gd":
     method = METHOD_GD
 elif args.method == "laplace_diag":
@@ -154,6 +155,8 @@ print("output_dim", output_dim)
 print("args.fc_dims", args.fc_dims)
 print("args.dropout", args.dropout)
 print("args.prior_var",args.prior_var)
+print("args.S", args.S)
+print("args.bs", args.bs)
 
 
 
@@ -168,8 +171,9 @@ else:
                             mu_scale_init=args.mu_scale_init,
                             prior_mean=args.prior_mean, prior_var=args.prior_var)
 
-N_train = len(train_loader)
-model.kl_weight = 1/N_train
+N_batch = len(train_loader)
+N_train = len(train_loader.dataset)
+model.kl_weight = (len(train_loader.dataset) / model.overall_dim) * (1/N_batch)
 
 # Save the model configuration
 model_config = model.get_model_info()
@@ -220,12 +224,12 @@ def train(model, train_loader, epoch, method, is_laplace=False):
 
     current_lr = lr_scheduler.step(epoch)
 
-    print("\n==========================================================================================")
-    if is_laplace:
-        print(f'Train Epoch: {epoch}/{args.epochs} (MAP Training), LR: {current_lr:.7f}')
-    else:
-        print(f'Train Epoch: {epoch}/{args.epochs},, LR: {current_lr:.7f}')
-    print("==========================================================================================")
+    # print("\n==========================================================================================")
+    # if is_laplace:
+    #     print(f'Train Epoch: {epoch}/{args.epochs} (MAP Training), LR: {current_lr:.7f}')
+    # else:
+    #     print(f'Train Epoch: {epoch}/{args.epochs},, LR: {current_lr:.7f}')
+    # print("==========================================================================================")
     
     for batch_idx, (data, target) in enumerate(train_loader):
         data = data.to(device, non_blocking=non_blocking)
@@ -286,13 +290,14 @@ def train(model, train_loader, epoch, method, is_laplace=False):
     metrics['train_nll'].append(avg_nll)
     metrics['train_loss'].append(avg_loss)  
     
-    if is_laplace:
-        print(f'====> Epoch: {epoch}/{args.epochs} Average loss: {avg_loss:.4f}, '
-              f'NLL: {avg_nll:.4f}, Accuracy: {accuracy:.4f}')
-    else:
-        print(f'====> Epoch: {epoch}/{args.epochs} Average loss: {avg_loss:.4f}, '
-              f'Loss: {(avg_loss):.4f}, NLL: {avg_nll:.4f}, '
-              f'Accuracy: {accuracy:.4f}')
+    if epoch%args.test_interval == 0:
+        if is_laplace:
+            print(f'====> Epoch: {epoch}/{args.epochs} Average loss: {avg_loss:.4f}, '
+                f'NLL: {avg_nll:.4f}, Accuracy: {accuracy:.4f}')
+        else:
+            print(f'====> Epoch: {epoch}/{args.epochs} Average loss: {avg_loss:.4f}, '
+                f'Loss: {(avg_loss):.4f}, NLL: {avg_nll:.4f}, '
+                f'Accuracy: {accuracy:.4f}')
     
     return avg_loss, avg_nll, accuracy
 
@@ -400,7 +405,9 @@ for epoch in range(1, epochs + 1):
     metrics['lr'].append(lr_scheduler.step(epoch))
     
     loss, nll, accuracy = train(model, train_loader, epoch, method, is_laplace=is_laplace)
-    print(f"Train accuracy: {accuracy:.4f}, Loss: {loss:.4f}")
+    
+
+
 
     # For Laplace methods, fit the Laplace approximation after each training epoch
     if is_laplace and epoch == epochs:
@@ -420,10 +427,12 @@ for epoch in range(1, epochs + 1):
         torch.save(states, os.path.join(run_dir, "model_latest.pt"))
 
 
-    test_loss, test_nll, test_accuracy  = test(model = model, test_loader = test_loader,epoch =  epoch, is_laplace=is_laplace, method=method, S = args.S*2)
 
-    print(f"Test metrics:")
-    print(f"Test accuracy: {test_accuracy:.4f}, Loss: {test_loss:.4f}")
+    if not is_laplace and epoch%args.test_interval == 0 or epoch == epochs:
+        print(f"Train accuracy: {accuracy:.4f}, Loss: {loss:.4f}")
+        test_loss, test_nll, test_accuracy  = test(model = model, test_loader = test_loader,epoch =  epoch, is_laplace=is_laplace, method=method, S = args.S*2)
+        print(f"Test metrics:")
+        print(f"Test accuracy: {test_accuracy:.4f}, Loss: {test_loss:.4f}")
     
     # Save metrics every save_interval epochs and on the last epoch
     if epoch % args.save_interval == 0 or epoch == epochs:
@@ -432,12 +441,13 @@ for epoch in range(1, epochs + 1):
 
 
 # save_and_plot_metrics(args.method, metrics, hyperparams, run_dir)
+if is_laplace:
+    metrics = {
+        'test_accuracy': [],
+        'test_nll': [],
+        'test_loss': []
+    }
+    test(model = model, test_loader = train_loader,epoch =  -1, is_laplace=is_laplace, method=method, S = args.S*2)
+    test(model = model, test_loader = test_loader,epoch =  -1, is_laplace=is_laplace, method=method, S = args.S*2)
 
-metrics = {
-    'test_accuracy': [],
-    'test_nll': [],
-    'test_loss': []
-}
-test(model, train_loader, -1, is_laplace=is_laplace, method=method)
-test(model, test_loader, -1, is_laplace=is_laplace, method=method)
-save_metrics(-1, metrics, run_dir)
+    save_metrics(-1, metrics, run_dir)
