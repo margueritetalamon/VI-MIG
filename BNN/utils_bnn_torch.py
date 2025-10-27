@@ -10,30 +10,32 @@ from sklearn.datasets import fetch_openml
 from sklearn.preprocessing import StandardScaler
 import pandas as pd
 
-# Add this near the top of your file, after the imports
-def get_device(force_cpu: bool = False):
-    if force_cpu:
-        torch.set_default_dtype(torch.float64)
-        device = torch.device("cpu")
-        print("Using CPU.")
-        return device
 
-    if torch.cuda.is_available():
-        # NVIDIA GPU available (Linux/Windows)
-        torch.set_default_dtype(torch.float64)
-        device = torch.device("cuda")
-        print(f"Using CUDA device: {torch.cuda.get_device_name()}")
-    elif torch.backends.mps.is_available():
-        # Apple Silicon GPU available (macOS)
-        torch.set_default_dtype(torch.float32)  # Changed from float64 for consistency
-        device = torch.device("mps")
-        print("Using MPS device (Apple Silicon)")
+def setup_device(device_arg):
+    """Setup device with optimal settings"""
+    if device_arg == 'cpu':
+        device = torch.device('cpu')
+        
+        # Get number of CPUs from SLURM or system
+        num_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count()))
+        
+        # Set threading for optimal CPU performance
+        torch.set_num_threads(num_cpus)
+        
+        # Enable MKL optimizations
+        if torch.backends.mkl.is_available():
+            torch.backends.mkl.enabled = True
+        
+        print(f"Using CPU with {num_cpus} threads")
+        print(f"MKL enabled: {torch.backends.mkl.is_available()}")
+        
+        return device, num_cpus
     else:
-        # CPU fallback
-        torch.set_default_dtype(torch.float64)
-        device = torch.device("cpu")
-        print("No GPU found. Using CPU instead.")
-    return device
+        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
+        num_cpus = 4  # For data loading
+        print(f"Using device: {device}")
+        return device, num_cpus
+
 
 def load_mnist(device, batch_size: int = 128, num_workers: int = 0):
     # Load MNIST dataset

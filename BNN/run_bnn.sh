@@ -5,15 +5,15 @@ show_usage() {
     echo "Usage: $0 <dataset_name> [options]"
     echo ""
     echo "Required:"
-    echo "  dataset_name          Dataset to use (mnist, boston, cifar10, etc.)"
+    echo "  dataset_name          Dataset to use (mnist)"
     echo ""
     echo "Options:"
     echo "  --method METHOD       Method to use: ibw, md, laplace (default: all)"
-    echo "  --n_components N      Number of components: 1,5 or specific value (default: 5,1 for ibw/md)"
-    echo "  --laplace_type TYPE   Laplace type: diag, kfac, or both (default: both)"
-    echo "  --lr LR              Learning rate (default: 5e-3 for ibw/md, 5e-4 for laplace)"
-    echo "  --epochs EPOCHS      Number of epochs (default: 1000 for ibw/md, 250 for laplace)"
-    echo "  --device DEVICE      Device to use: cpu, gpu (default: gpu for ibw/md, cpu for laplace)"
+    echo "  --n_components N      Number of components: 1,5 or specific value )"
+    echo "  --laplace_type TYPE   Laplace type: diag, kfac, or both "
+    echo "  --lr LR              Learning rate"
+    echo "  --epochs EPOCHS      Number of epochs "
+    echo "  --device DEVICE      Device to use: cpu, gpu"
     echo ""
     echo "Examples:"
     echo "  $0 mnist                                    # Run all methods with default settings"
@@ -21,7 +21,6 @@ show_usage() {
     echo "  $0 mnist --method ibw --n_components 5      # Run only IBW with n_components=5"
     echo "  $0 mnist --method laplace --laplace_type diag  # Run only Laplace diagonal"
     echo "  $0 mnist --method md --n_components 10      # Run MD with n_components=10"
-    echo "  $0 cifar10 --method ibw --lr 1e-3 --epochs 500  # Custom lr and epochs"
     exit 1
 }
 
@@ -133,15 +132,11 @@ run_experiment() {
         --prior_var ${pv} \
         --save_dir ${BASE_DIR} \
         --bs ${bs} \
-        --compile 0 \
-        --warmup_epochs 1 \
-        --kl_start 1 \
-        --kl_end 1 \
         --device ${device} \
         --dataset ${DATASET} \
         --optimizer sgd \
         --dropout 0 \
-    
+        
     echo "  Finished at: $(date)" | tee -a $LOG_FILE
     echo "---------------------------------------------" | tee -a $LOG_FILE
 }
@@ -185,15 +180,16 @@ if [ "$run_laplace" == true ]; then
     
     laplace_lr=${LR:-5e-4}
     laplace_epochs=${EPOCHS:-250}
-    laplace_device=${DEVICE:-cpu}
+    laplace_device=${DEVICE:-gpu}
     laplace_pv=${PV:-10.0} 
+    laplace_bs=${bs:-128} 
     
     if [ "$LAPLACE_TYPE" == "both" ] || [ "$LAPLACE_TYPE" == "diag" ]; then
-        run_experiment "laplace_diag" "$laplace_lr" "$laplace_epochs" 256 1 "$laplace_device" "$laplace_pv" 
+        run_experiment "laplace_diag" "$laplace_lr" "$laplace_epochs" 256 1 "$laplace_device" "$laplace_pv" "$laplace_bs" 
     fi
     
     if [ "$LAPLACE_TYPE" == "both" ] || [ "$LAPLACE_TYPE" == "kfac" ]; then
-        run_experiment "laplace_kfac" "$laplace_lr" "$laplace_epochs" 256 1 "$laplace_device" "$laplace_pv" 
+        run_experiment "laplace_kfac" "$laplace_lr" "$laplace_epochs" 256 1 "$laplace_device" "$laplace_pv" "$laplace_bs" 
     fi
 fi
 

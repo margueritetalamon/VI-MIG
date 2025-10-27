@@ -8,7 +8,7 @@ import ast
 
 from utils_bnn_torch import (
     load_dataset,
-    save_and_plot_metrics,
+    setup_device,
     save_metrics,
     save_model_checkpoint,
     LearningRateScheduler)
@@ -27,36 +27,6 @@ from laplace import (
     LaplaceBayesianMLP
 )
 
-
-def setup_device(device_arg):
-    """Setup device with optimal settings"""
-    if device_arg == 'cpu':
-        device = torch.device('cpu')
-        
-        # Get number of CPUs from SLURM or system
-        num_cpus = int(os.environ.get('SLURM_CPUS_PER_TASK', os.cpu_count()))
-        
-        # Set threading for optimal CPU performance
-        torch.set_num_threads(num_cpus)
-        
-        # Enable MKL optimizations
-        if torch.backends.mkl.is_available():
-            torch.backends.mkl.enabled = True
-        
-        print(f"Using CPU with {num_cpus} threads")
-        print(f"MKL enabled: {torch.backends.mkl.is_available()}")
-        
-        return device, num_cpus
-    else:
-        device = torch.device('cuda' if torch.cuda.is_available() else 'cpu')
-        num_cpus = 4  # For data loading
-        print(f"Using device: {device}")
-        return device, num_cpus
-
-
-
-def parse_tuple(s: str) -> tuple[int, int, int, int]:
-    return ast.literal_eval(s)
 
 class MargArgs(tap.Tap):
     dataset: str = "" # mnist, cifar10, boston
@@ -82,11 +52,6 @@ class MargArgs(tap.Tap):
     fc_dims: list[int] = [256] # fully-connect layers dimensions
     dropout: float = 0.0
     grad_clip: float = 1.0 # clip gradient norm
-    warmup_epochs: int = 10 # number of epochs to slowly bring KL weight up from kl_start to kl_end
-    kl_start: float = 0.0 # starting value of KL weight
-    kl_end: float = 0.001 # KL weight during training (after warmup period)
-    compile: int = 0 # Whether or not to compile the BNN
-    skip_pretraining: bool = True # Skip initial evaluation of model
     optimizer: str = "sgd" # Optimizer for Laplace methods: adam, sgd
     test_interval: int = 10
 
@@ -166,10 +131,8 @@ if is_laplace:
                                 prior_precision=1.0/args.prior_var)  # Convert prior variance to precision
 else:
     model = IGMMBayesianMLP(input_dim=input_dim, output_dim=output_dim,
-                            n_components=n_components, n_samples=n_samples,
-                            hidden_dims=args.fc_dims, dropout_rate=args.dropout,
-                            mu_scale_init=args.mu_scale_init,
-                            prior_mean=args.prior_mean, prior_var=args.prior_var)
+                            n_components=n_components,
+                            hidden_dims=args.fc_dims, dropout_rate=args.dropout,prior_var=args.prior_var)
 
 N_batch = len(train_loader)
 N_train = len(train_loader.dataset)
@@ -186,9 +149,7 @@ lr_scheduler = LearningRateScheduler(args.lr, args.epochs, args.lr_scheduler,
                                      min_lr=args.lr_min, lr_decay_epochs=args.lr_decay_epochs,
                                      lr_decay_factor=args.lr_decay_factor, restart_period=args.lr_restart)
 
-# Put model to GPU if needed and if possible
-if args.compile:
-    model = torch.compile(model)
+
 model = model.to(device)
 
 # Initialize metrics storage
@@ -308,7 +269,6 @@ def test(model, test_loader, epoch, S=10, is_laplace=False, method=None):
     test_loss = 0
     test_nll_total = 0
     correct = 0
-    samples = None
     n_test = len(test_loader.dataset)
     
     with torch.no_grad():
@@ -375,31 +335,6 @@ epochs = args.epochs
 print(f"--> Starting training with hyperparameters:\n {hyperparams}")
 print(f"--> Saving results to: {run_dir}")
 
-if not args.skip_pretraining:
-    # Evaluate initial model performance (epoch 0) before any training
-    print("Evaluating initial model performance (pre-training)...")
-    train_loss, train_nll, train_accuracy = test(model, train_loader, is_laplace=is_laplace)
-    test_loss, test_nll, test_accuracy = test(model, test_loader, is_laplace=is_laplace)
-
-    # Store initial metrics (epoch 0)
-    metrics['epochs'].append(0)
-    metrics['lr'].append(lr_scheduler.step(0))
-    metrics['train_accuracy'].append(train_accuracy)
-    metrics['train_nll'].append(train_nll)
-    metrics['train_loss'].append(train_loss)
-    metrics['test_accuracy'].append(test_accuracy)
-    metrics['test_nll'].append(test_nll)
-    metrics['test_loss'].append(test_loss)
-
-    print(f"Initial metrics before training:")
-    print(f"  Train accuracy: {train_accuracy:.4f}, Loss: {train_loss:.4f}")
-    print(f"  Test accuracy: {test_accuracy:.4f}, Loss: {test_loss:.4f}")
-
-    # Save initial metrics
-    save_metrics(0, metrics, run_dir)
-    save_model_checkpoint(model, 0, hyperparams, metrics, run_dir)
-
-# Start training loop
 for epoch in range(1, epochs + 1):
     metrics['epochs'].append(epoch)
     metrics['lr'].append(lr_scheduler.step(epoch))
@@ -425,8 +360,6 @@ for epoch in range(1, epochs + 1):
         print(f"  Weight std: min={torch.sqrt(weight_var).min():.2e}, max={torch.sqrt(weight_var).max():.2e}, mean={torch.sqrt(weight_var).mean():.2e}")
         states = model.get_laplace_state()
         torch.save(states, os.path.join(run_dir, "model_latest.pt"))
-
-
 
     if not is_laplace and epoch%args.test_interval == 0 or epoch == epochs:
         print(f"Train accuracy: {accuracy:.4f}, Loss: {loss:.4f}")

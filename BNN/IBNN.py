@@ -13,17 +13,13 @@ METHOD_LAPLACE_KFAC = 5
 
 # Define a Bayesian Layer with Sampled Mixture of Isotropic Gaussians
 class IsotropicSampledMixtureLinear(nn.Module):
-    def __init__(self, in_features: int, out_features: int, n_components: int=2,
-                 n_samples: int=5, shared_logeps = None):
+    def __init__(self, in_features: int, out_features: int, n_components: int=2, shared_logeps = None):
         super(IsotropicSampledMixtureLinear, self).__init__()
 
         self.in_features = in_features
         self.out_features = out_features
-        self.n_components = n_components
-        self.n_samples = n_samples  # Number of components to sample during forward pass       
-        
-        # Mixture weights (probabilities)
-        self.weights = torch.ones(n_components)/n_components
+        self.n_components = n_components        
+        self.weights = torch.ones(n_components)/n_components ## uniform weights
 
         # Mean parameters for each Gaussian component
         
@@ -38,15 +34,14 @@ class IsotropicSampledMixtureLinear(nn.Module):
             self.logeps = nn.Parameter(torch.Tensor(n_components).fill_(-5))
         
         
-    def forward(self, x: torch.Tensor, sample: bool = True, sampled_indices = None):
-       
+    def forward(self):
+        ### the forward is done in IGMMBayesianMLP
         return 
 
 # Multi-Layer Bayesian Neural Network
 class IGMMBayesianMLP(nn.Module):
     def __init__(self, input_dim: int, hidden_dims: list, output_dim: int,
-                 n_components: int = 2, n_samples: int = 5, dropout_rate: float = 0.0,
-                 mu_scale_init: float=1.0, prior_mean: float=0.0, prior_var: float=1.0):
+                 n_components: int = 2, dropout_rate: float = 0.0, prior_var: float=1.0):
         """
         Multi-layer Bayesian Neural Network using IsotropicSampledMixtureLinear layers.
 
@@ -55,7 +50,6 @@ class IGMMBayesianMLP(nn.Module):
             hidden_dims: List of hidden layer dimensions (e.g., [512, 256, 128])
             output_dim: Output dimension (number of classes)
             n_components: Number of mixture components per layer
-            n_samples: Number of components to sample during forward pass
             dropout_rate: Dropout rate between layers (optional regularization)
         """
         super(IGMMBayesianMLP, self).__init__()
@@ -64,10 +58,8 @@ class IGMMBayesianMLP(nn.Module):
         self.hidden_dims = hidden_dims
         self.output_dim = output_dim
         self.n_components = n_components
-        self.n_samples = n_samples
         self.dropout_rate = dropout_rate
         self.prior_var = prior_var
-        self.prior_mean = prior_mean
         self.training = True
         self.kl_weight = None
 
@@ -89,7 +81,6 @@ class IGMMBayesianMLP(nn.Module):
                 in_features=all_dims[i],
                 out_features=all_dims[i + 1],
                 n_components=n_components,
-                n_samples=n_samples,
                 shared_logeps = shared_logeps
             )
             shared_logeps = layer.logeps ## each time it gives the eps of the previous layer which is what we want since eps is the same accross dim
@@ -225,7 +216,6 @@ class IGMMBayesianMLP(nn.Module):
             "architecture": [self.input_dim] + self.hidden_dims + [self.output_dim],
             "n_layers": len(self.layers),
             "n_components_per_layer": self.n_components,
-            "n_samples_per_forward": self.n_samples,
             "total_parameters": total_params,
             "bayesian_parameters": bayesian_params,
             "dropout_rate": self.dropout_rate
@@ -235,7 +225,7 @@ class IGMMBayesianMLP(nn.Module):
     def step(self,
              learning_rate: float = 0.001,
              grad_clip: float = 5.0,
-             eps: float = 1e-6,
+             num_stab: float = 1e-6,
              method: int = METHOD_IBW) -> None:
         """
         Custom gradient descent optimizer for Bayesian Neural Networks with a special update rule for logvar.
@@ -244,16 +234,13 @@ class IGMMBayesianMLP(nn.Module):
         - model: The BNN model with mixture components
         - learning_rate: Base learning rate for all parameters
         - max_norm: Maximum gradient norm for clipping
-        - eps: Small constant for numerical stability
         - method: Update method for logvar (METHOD_IBW, METHOD_MD, METHOD_NGD)
         """
         # Update means using standard gradient descent
         with torch.no_grad():
-            d = self.input_dim
             d = self.overall_dim
             n = self.n_components
             for p, param in enumerate(self.mean_params):
-                # print(f"{param.grad=}")
                 if param.grad is None:
                     continue
 
@@ -270,9 +257,7 @@ class IGMMBayesianMLP(nn.Module):
                 else:
                     param.data.add_(param.grad, alpha=-n * learning_rate)
 
-            # Update logvars using variance gradients
             for param in self.logvar_params:
-
                 # Convert logvar gradients to variance gradients
                 # If we have logvar, then var = exp(logvar)
                 # The gradient w.r.t variance is: dL/dvar = dL/dlogvar * dlogvar/dvar = dL/dlogvar * (1/var)
@@ -288,11 +273,7 @@ class IGMMBayesianMLP(nn.Module):
                 if method == METHOD_IBW:
                     # var = var + var_update_factor * var_grad^2
                     var_update = (1.0 - (2.0 * n * learning_rate / d) * var_grad) ** 2
-                    # print(f"{var_grad=}")
-                    # print(f"{(2.0 * n * learning_rate / d) * var_grad=}")
-                    # print(f"{variance=}")
                     new_variance = var_update * variance
-                    # print(f"{new_variance=}")
 
                 elif method == METHOD_MD:
                     var_update = torch.exp((-2.0 * n * learning_rate / d) * var_grad)
@@ -300,12 +281,14 @@ class IGMMBayesianMLP(nn.Module):
                 elif method == METHOD_NGD:
                     inv_new_variance = (1 / variance) + (2.0 * n * learning_rate * var_grad / d)
                     new_variance = 1.0 / inv_new_variance
-                else:
-                    # no update
+                elif method == METHOD_GD:
+                    # no update on variance
                     new_variance = variance
+                else:
+                    raise ValueError("Not implemented method")
 
                 # Convert back to logvar
-                new_logvar = torch.log(new_variance + eps)
+                new_logvar = torch.log(new_variance + num_stab)
 
                 # Update the parameter (logvar)
                 param.data.copy_(new_logvar)

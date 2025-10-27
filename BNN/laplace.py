@@ -27,10 +27,10 @@ class LaplaceLinear(nn.Module):
         self.in_features = in_features
         self.out_features = out_features
         self.prior_precision = prior_precision
-        print(prior_precision)
+        print(f"{self.prior_precision=}")
         
         # Standard linear layer parameters (MAP estimates)
-        self.weight = nn.Parameter(torch.randn(out_features, in_features) * 0.1)
+        self.weight = nn.Parameter(torch.randn(out_features, in_features))
         if bias:
             self.bias = nn.Parameter(torch.zeros(out_features))
         else:
@@ -56,6 +56,8 @@ class LaplaceLinear(nn.Module):
         self.adam_m = {}  # First moment estimates
         self.adam_v = {}  # Second moment estimates
         self.num_stab = 1e-10
+
+       
         
     def forward(self, x: torch.Tensor, sample: bool = False, method: int = METHOD_LAPLACE_DIAG, S = 10):
         """
@@ -173,6 +175,11 @@ class LaplaceBayesianMLP(nn.Module):
         self.output_dim = output_dim
         self.dropout_rate = dropout_rate
         self.prior_precision = prior_precision
+        all_dims = [self.input_dim] + self.hidden_dims + [self.output_dim]
+
+        total_params = sum(all_dims[i]*all_dims[i+1] + all_dims[i+1] 
+                   for i in range(len(all_dims)-1))
+        self.overall_dim = total_params
         
         # Build the network layers
         self.layers = nn.ModuleList()
@@ -318,90 +325,45 @@ class LaplaceBayesianMLP(nn.Module):
             hooks.append(layer.register_forward_hook(fwd_hook(i)))
             hooks.append(layer.register_full_backward_hook(bwd_hook(i)))
 
-        batch_count = 0
+        n_samples = 0
 
         for data, target in data_loader:
             data = data.to(device)
             target = target.to(device)
 
-            self.zero_grad(set_to_none=True)
+            self.zero_grad()
             logits  = self(data)
             loss = F.cross_entropy(logits, target, reduction='sum')
             loss.backward()
 
             B = data.size(0)
-
-            # DEBUG: Only print first batch
-            if batch_count == 0:
-                for i, layer in enumerate(self.layers):
-                    a = layer._a
-                    d = layer._delta
-                    print(f"\n=== Layer {i}, Batch {batch_count} ===")
-                    print(f"  a shape: {a.shape}, range: [{a.min():.4f}, {a.max():.4f}]")
-                    print(f"  δ shape: {d.shape}, range: [{d.min():.4f}, {d.max():.4f}]")
-                    print(f"  a² sum: {(a**2).sum():.4e}")
-                    print(f"  δ² sum: {(d**2).sum():.4e}")
-                 
-
-                print("\n=== Gradient Check ===")
-                for name, param in self.named_parameters():
-                    if param.grad is not None:
-                        print(f"{name}: grad norm = {param.grad.norm():.4e}, grad mean = {param.grad.mean():.4e}")
+            n_samples += B
 
             # Accumulate for ALL batches
             for i, layer in enumerate(self.layers):
                 a = layer._a
-                d = layer._delta
+                delta = layer._delta
+
+                a_sq = a ** 2 
+                delta_sq = delta ** 2
+                layer._a_sq_sum += delta_sq.T @ a_sq 
+                layer._delta_sq_sum += delta_sq.sum(dim=0)
                 
-                a2 = (a ** 2).sum(dim=0)
-                d2 = (d ** 2).sum(dim=0)
-
-                if stats[i]["a2_sum"] is None:
-                    stats[i]["a2_sum"] = a2
-                    stats[i]["d2_sum"] = d2
-                    stats[i]["N"] = B
-                else:
-                    stats[i]["a2_sum"] += a2
-                    stats[i]["d2_sum"] += d2
-                    stats[i]["N"] += B
-
-            batch_count += 1
-            # NO BREAK HERE!
-
-        # AFTER loop - check accumulation
-        print(f"\n=== After Processing All Batches ===")
-        print(f"Total batches processed: {batch_count}")
-        print(f"Total samples: {stats[0]['N']}")
+                
         
-        eps = 1e-12
         for i, layer in enumerate(self.layers):
-            if stats[i]["N"] == 0:
-                I = torch.full((layer.in_features,), eps, device=device, dtype=layer.weight.dtype)
-                O = torch.full((layer.out_features,), eps, device=device, dtype=layer.weight.dtype)
-            else:
-                I = stats[i]["a2_sum"] / stats[i]["N"]
-                O = stats[i]["d2_sum"] / stats[i]["N"]
-                
-                print(f"Layer {i}:")
-                print(f"  I range: [{I.min():.4e}, {I.max():.4e}], mean: {I.mean():.4e}")
-                print(f"  O range: [{O.min():.4e}, {O.max():.4e}], mean: {O.mean():.4e}")
+            weight_hessian_diag = layer._a_sq_sum 
+            # weight_hessian_diag = layer._a_sq_sum / n_samples
+            # bias_hessian_diag = layer._delta_sq_sum / n_samples
+            bias_hessian_diag = layer._delta_sq_sum
 
-            # Compute diagonal Hessian
-            weight_diag = torch.outer(O, I)
-            bias_diag = O.clone()
-            
-            print(f"  weight_diag range: [{weight_diag.min():.4e}, {weight_diag.max():.4e}], mean: {weight_diag.mean():.4e}")
-
-            # Posterior precision
-            layer.weight_precision_diag = weight_diag + layer.prior_precision
-            if layer.bias is not None:
-                layer.bias_precision_diag = bias_diag + layer.prior_precision
-
-            layer.weight_precision_diag = torch.clamp(layer.weight_precision_diag, min=1e-12)
-            if layer.bias is not None:
-                layer.bias_precision_diag = torch.clamp(layer.bias_precision_diag, min=1e-12)
+            layer.weight_precision_diag = weight_hessian_diag + layer.prior_precision
+            layer.bias_precision_diag = bias_hessian_diag + layer.prior_precision
 
             layer.hessian_computed = True
+            delattr(layer, '_a_sq_sum')
+            delattr(layer, '_delta_sq_sum')
+            
 
         # Cleanup
         for h in hooks:
@@ -410,8 +372,6 @@ class LaplaceBayesianMLP(nn.Module):
 
     
     def compute_KFAC_hessian(self, data_loader, device,
-                         max_batches=None,
-                         ema_decay: float = 0.95,
                          ridge: float = 1e-3):
         """
         Compute K-FAC factors A = E[a a^T], S = E[δ δ^T] for each LaplaceLinear layer.
